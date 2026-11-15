@@ -5,6 +5,7 @@
 -- Ranged weapons and a sheathed weapon keep the game's behavior.
 -- Switches are in the REFramework menu under "Focus Rules" and are saved to reframework/data/FocusRules.json.
 -- With "Log focus state" on, focus state, the focus button and actions are written to re2_framework_log.txt.
+-- Logging is off by default and its per-character hook is only installed when it is on at script load.
 --
 -- Method names come from the game's il2cpp_dump.json (REFramework SDK dump).
 -- Hook patterns follow Bimmr's MHWS-Weapon-Swapper (HunterCharacter.update, get_IsMaster,
@@ -18,7 +19,7 @@
 local CONFIG_PATH = "FocusRules.json"
 
 local settings = {
-    log_state = true,
+    log_state = false,
     focus_strike_only = true,
     no_aim_turning = true,
     wounds_only_while_focus_held = true,
@@ -63,10 +64,17 @@ local function is_melee(hunter)
 end
 
 -- In round 1 two hunter objects reported get_IsMaster every frame, so the master is matched
--- against the character from PlayerManager instead.
-local function is_master_hunter(hunter)
+-- against the character from PlayerManager instead. Its address is looked up once per frame,
+-- and only the address is kept, so no hook calls into an object from an earlier frame.
+local master_hunter_address = nil
+
+re.on_frame(function()
     local master = get_master_hunter()
-    return hunter ~= nil and master ~= nil and hunter:get_address() == master:get_address()
+    master_hunter_address = master and master:get_address() or nil
+end)
+
+local function is_master_hunter(hunter)
+    return hunter ~= nil and master_hunter_address ~= nil and hunter:get_address() == master_hunter_address
 end
 
 local function is_master_melee(hunter)
@@ -240,14 +248,17 @@ local function log_state_changes(hunter)
     last_state = state
 end
 
--- update is inherited from app.CharacterBase, so this hook also runs for monsters and NPCs.
-sdk.hook(hunter_type:get_method("update"), function(args)
-    if not settings.log_state then return end
-    local hunter = hunter_from_args(args)
-    if not hunter or not hunter:get_type_definition():is_a("app.HunterCharacter") then return end
-    if not is_master_hunter(hunter) then return end
-    log_state_changes(hunter)
-end)
+-- update is inherited from app.CharacterBase, so this hook runs for every monster and NPC each frame.
+-- It is installed only when logging is on at script load.
+if settings.log_state then
+    sdk.hook(hunter_type:get_method("update"), function(args)
+        if not settings.log_state then return end
+        local hunter = hunter_from_args(args)
+        if not hunter or not hunter:get_type_definition():is_a("app.HunterCharacter") then return end
+        if not is_master_hunter(hunter) then return end
+        log_state_changes(hunter)
+    end)
+end
 
 local function setting_checkbox(label, key)
     local changed, value = imgui.checkbox(label, settings[key])
@@ -263,6 +274,6 @@ re.on_draw_ui(function()
     setting_checkbox("Focus button only for Focus Strikes (melee, drawn)", "focus_strike_only")
     setting_checkbox("No turning towards the camera (melee)", "no_aim_turning")
     setting_checkbox("Wounds only while focus button held", "wounds_only_while_focus_held")
-    setting_checkbox("Log focus state", "log_state")
+    setting_checkbox("Log focus state (applies after Reset scripts)", "log_state")
     imgui.tree_pop()
 end)
