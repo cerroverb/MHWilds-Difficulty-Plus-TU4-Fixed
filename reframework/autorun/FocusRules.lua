@@ -1,4 +1,4 @@
--- Focus Mode rules prototype, round 2.
+-- Focus Mode rules prototype, round 3.
 -- Each rule is off by default and can be switched in the REFramework menu under "Focus Rules".
 -- With "Log focus state" on, changes in focus state, aim type and action are written to re2_framework_log.txt,
 -- with a count of each hooked call made for the master hunter during the action.
@@ -7,6 +7,10 @@
 -- Hook patterns follow Bimmr's MHWS-Weapon-Swapper (HunterCharacter.update, get_IsMaster,
 -- BaseActionController:get_CurrentAction) and MHWS-Buffer (getMasterPlayerInfo, SKIP_ORIGINAL,
 -- replacing a return value with sdk.to_ptr): https://github.com/Bimmr
+-- Reading the focus button follows get_input() and getKey() in DerKleineLi's MHWs-MIGGA
+-- (Kinsect_dont_come_back.lua): https://github.com/DerKleineLi/MHWs-MIGGA
+-- The wound highlight switch follows kmy0's HudController (hud/hook/options/scar.lua), which sets
+-- app.cEnemyLoopEffectHighlight._IsAim from a hook on isActivate(): https://github.com/kmy0/HudController
 
 local settings = {
     log_state = true,
@@ -15,6 +19,7 @@ local settings = {
     block_focus_aim_type = false,
     block_aim_turn_check = false,
     block_aim_turn_rotation = false,
+    wounds_only_while_focus_held = false,
 }
 
 -- app.WeaponDef.TYPE: LONG_SWORD = 0 through ROD = 10 are melee. BOW, HEAVY_BOWGUN and LIGHT_BOWGUN follow.
@@ -22,6 +27,8 @@ local LAST_MELEE_WEAPON_TYPE = 10
 -- app.HunterDef.AIM_TYPE values seen in round 1: melee Focus Mode sets POINT_ATTACK.
 local AIM_TYPE_NONE = 0
 local AIM_TYPE_POINT_ATTACK = 3
+-- app.PlayerKey.PAD.AIM, the Focus Mode button.
+local PAD_KEY_AIM = 18
 
 local function get_master_hunter()
     local player_manager = sdk.get_managed_singleton("app.PlayerManager")
@@ -29,6 +36,24 @@ local function get_master_hunter()
     local player_info = player_manager:getMasterPlayerInfo()
     if not player_info then return nil end
     return player_info:get_Character()
+end
+
+local function get_master_input()
+    local player_manager = sdk.get_managed_singleton("app.PlayerManager")
+    if not player_manager then return nil end
+    local player_info = player_manager:getMasterPlayer()
+    if not player_info then return nil end
+    -- MIGGA reads get_Master() here. The current game's holder has get_Hunter() instead.
+    local controller = player_info:get_Controller():get_ControllerEntityHolder():get_Hunter()
+    if not controller or not controller:get_type_definition():is_a("app.cMasterPlayerControllerEntity") then
+        return nil
+    end
+    return controller:get_CommandController():get_MergedVirtualInput()
+end
+
+local function is_focus_button_held()
+    local input = get_master_input()
+    return input ~= nil and input:getKey(PAD_KEY_AIM):get_On()
 end
 
 local function is_melee(hunter)
@@ -89,6 +114,7 @@ local function read_focus_state(hunter)
         aim_type = context:get_AimType(),
         action = action and action:get_type_definition():get_full_name() or "none",
         aim_turned = hunter:get_CurrentActionInfo():get_IsAimTurned(),
+        focus_button = is_focus_button_held(),
     }
 end
 
@@ -108,6 +134,9 @@ local function log_state_changes(hunter)
     end
     if state.aim_turned ~= last_state.aim_turned then
         log_line("aim_turned=" .. tostring(state.aim_turned))
+    end
+    if state.focus_button ~= last_state.focus_button then
+        log_line("focus_button=" .. tostring(state.focus_button))
     end
     last_state = state
 end
@@ -176,6 +205,20 @@ end
 sdk.hook(hunter_type:get_method("rotateAimTurnLook"), on_aim_turn_rotation)
 sdk.hook(hunter_type:get_method("rotateAimTurnLook_WpOffset"), on_aim_turn_rotation)
 
+-- Monster wounds are highlighted only while the focus button is held, whether or not Focus Mode starts.
+local highlight_effect = nil
+
+sdk.hook(sdk.find_type_definition("app.cEnemyLoopEffectHighlight"):get_method("isActivate"), function(args)
+    highlight_effect = sdk.to_managed_object(args[2])
+end, function(retval)
+    local effect = highlight_effect
+    highlight_effect = nil
+    if not settings.wounds_only_while_focus_held or not effect then return retval end
+    local held = is_focus_button_held()
+    effect._IsAim = held
+    return sdk.to_ptr(held and 1 or 0)
+end)
+
 local function setting_checkbox(label, key)
     local changed, value = imgui.checkbox(label, settings[key])
     if changed then
@@ -192,5 +235,6 @@ re.on_draw_ui(function()
     setting_checkbox("Block focus aim type (melee)", "block_focus_aim_type")
     setting_checkbox("Block aim turn check (melee)", "block_aim_turn_check")
     setting_checkbox("Block aim turn rotation (melee)", "block_aim_turn_rotation")
+    setting_checkbox("Wounds only while focus button held", "wounds_only_while_focus_held")
     imgui.tree_pop()
 end)
