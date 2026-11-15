@@ -1,4 +1,4 @@
--- Focus Mode rules prototype, round 6.
+-- Focus Rules: Manual Aim / Focus Aim Restricted (MA) for Monster Hunter Wilds.
 -- With a melee weapon drawn, the focus button on its own no longer enters Focus Mode, and the focus
 -- reticle stays hidden. Focus button + R1 still performs a Focus Strike, turned only the way a normal
 -- attack turns, never towards the camera. R1 on its own keeps its normal use, unless "R1 alone does
@@ -7,7 +7,7 @@
 -- Ranged weapons and a sheathed weapon keep the game's behavior.
 -- Switches are in the REFramework menu under "Focus Rules" and are saved to reframework/data/FocusRules.json.
 -- With "Log focus state" on, focus state, the focus button and actions are written to re2_framework_log.txt.
--- Logging is off in releases and on in test builds. Its per-character hook is only installed when it
+-- Logging is off by default. Its per-character hook is only installed when it
 -- is on at script load.
 --
 -- Method names come from the game's il2cpp_dump.json (REFramework SDK dump).
@@ -24,7 +24,7 @@
 local CONFIG_PATH = "FocusRules.json"
 
 local settings = {
-    log_state = false, -- true in test builds
+    log_state = false,
     focus_strike_only = true,
     no_aim_turning = true,
     wounds_only_while_focus_held = true,
@@ -35,7 +35,7 @@ local settings = {
 -- app.WeaponDef.TYPE: LONG_SWORD = 0 through ROD = 10 are melee. BOW, HEAVY_BOWGUN and LIGHT_BOWGUN follow.
 local LAST_MELEE_WEAPON_TYPE = 10
 -- app.PlayerKey.PAD
-local PAD_KEY_FOCUS_STRIKE = 3 -- ATTACK_SP_B, R1 on a pad (round 4 log)
+local PAD_KEY_FOCUS_STRIKE = 3 -- ATTACK_SP_B, R1 on a pad
 local PAD_KEY_FOCUS = 18 -- AIM
 -- app.HunterDef.ACTION_START_TURN_TYPE: the _AIM variants turn towards the camera.
 local START_TURN_FOR_AIM = { [3] = 1, [4] = 2 } -- LV1_AIM -> LV1, LV2_AIM -> LV2
@@ -76,7 +76,7 @@ local function is_melee(hunter)
     return weapon_type >= 0 and weapon_type <= LAST_MELEE_WEAPON_TYPE
 end
 
--- In round 1 two hunter objects reported get_IsMaster every frame, so the master is matched
+-- More than one hunter object can report get_IsMaster, so the master is matched
 -- against the character from PlayerManager instead. Its address is looked up once per frame,
 -- and only the address is kept, so no hook calls into an object from an earlier frame.
 local master_hunter_address = nil
@@ -112,7 +112,7 @@ end
 -- Focus button state as the player pressed it, read before this script changes it.
 local focus_button_held = false
 
--- Focus Mode stance actions every weapon has (round 1 to 5 logs). While the hunter is still in one
+-- Focus Mode stance actions every weapon has. While the hunter is still in one
 -- of these after the strike press was sent, the game has not started the strike yet.
 local FOCUS_STANCE_ACTIONS = { cAimIdle = true, cAimIdleHigh = true, cAimWalk = true, cAimWalkStop = true }
 
@@ -226,7 +226,7 @@ sdk.hook(sdk.find_type_definition("app.HunterCharacter"):get_method("beginAction
     end
 end)
 
--- Round 1 and 2 logs: in Focus Mode the hunter turns to the camera through rotateAimTurnLook,
+-- In Focus Mode the hunter turns to the camera through rotateAimTurnLook,
 -- gated by isEnableAimTurn.
 local hunter_type = sdk.find_type_definition("app.HunterCharacter")
 local aim_turn_check_hunter = nil
@@ -251,13 +251,13 @@ end
 sdk.hook(hunter_type:get_method("rotateAimTurnLook"), skip_aim_turn_rotation)
 sdk.hook(hunter_type:get_method("rotateAimTurnLook_WpOffset"), skip_aim_turn_rotation)
 
--- Reticle panels shown while the script holds Focus Mode on for a strike. Round 9 hid UI020002 alone
--- and the crosshair still flashed. kmy0's HudController maps the focus reticle (UI020002) onto the
--- general reticle HUD (UI020000) in data/ace.lua (hudless_to_hud), so both are hidden.
+-- Reticle panels shown while the script holds Focus Mode on for a strike. kmy0's HudController maps
+-- the focus reticle (UI020002) onto the general reticle HUD (UI020000) in data/ace.lua
+-- (hudless_to_hud), so both are hidden.
 -- GUIID values are from app.GUIID.ID in the SDK dump.
 local FOCUS_RETICLE_GUI_IDS = { 46, 50 } -- UI020000, UI020002
--- Round 10 and 12 logs: GUI020016 turned visible at every strike and invisible after it. It is hidden
--- only while the strike window is open, since it also shows outside Focus Mode.
+-- GUI020016 turns visible at every strike and invisible after it. It is hidden only while the
+-- strike window is open, since it also shows outside Focus Mode.
 local STRIKE_ONLY_GUI_ID = 61 -- UI020016
 local strike_panel_hidden = false
 local focus_reticle_hidden = false
@@ -269,8 +269,7 @@ end
 
 -- Like kmy0's HudController, the change is written after app.GUIManager.lateUpdateApp(), once the
 -- game has finished its own HUD updates for the frame. Panels are shown again only once, so the
--- game's own visibility is left alone. Round 8 hooked GUI020002's update methods instead and flooded
--- the log with Lua errors.
+-- game's own visibility is left alone.
 local function apply_focus_reticle_visibility(display_manager)
     if not hide_focus_reticle_now and not focus_reticle_hidden then return end
     for _, gui_id in ipairs(FOCUS_RETICLE_GUI_IDS) do
@@ -296,8 +295,8 @@ local function apply_strike_panel_visibility(display_manager)
     strike_panel_hidden = hide
 end
 
--- Test builds only: logs every HUD panel that turns visible or invisible while a melee weapon is
--- drawn, to find the panel that draws the crosshair during strikes.
+-- With logging on: logs every HUD panel that turns visible or invisible while a melee weapon is
+-- drawn.
 local hud_panel_visible = {}
 
 local function log_hud_panel_changes(display_manager)
@@ -328,7 +327,7 @@ sdk.hook(sdk.find_type_definition("app.GUIManager"):get_method("lateUpdateApp"),
 end)
 
 local highlight_effect = nil
--- Test builds only: once per second, how often the game asked for the wound highlight, how often its
+-- With logging on: once per second, how often the game asked for the wound highlight, how often its
 -- own answer was "on", and what this script answered.
 local highlight_counts = { calls = 0, game_on = 0, script_on = 0, since = 0 }
 
