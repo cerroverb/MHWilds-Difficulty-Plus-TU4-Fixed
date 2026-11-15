@@ -309,12 +309,37 @@ sdk.hook(sdk.find_type_definition("app.GUIManager"):get_method("lateUpdateApp"),
 end)
 
 local highlight_effect = nil
+-- Test builds only: once per second, how often the game asked for the wound highlight, how often its
+-- own answer was "on", and what this script answered.
+local highlight_counts = { calls = 0, game_on = 0, script_on = 0, since = 0 }
+
+local function log_highlight_counts()
+    local now = os.clock()
+    if now - highlight_counts.since < 1 then return end
+    if highlight_counts.calls > 0 then
+        log_line(string.format("wound highlight calls=%d game_on=%d script_on=%d focus_button=%s",
+            highlight_counts.calls, highlight_counts.game_on, highlight_counts.script_on,
+            tostring(focus_button_held)))
+    end
+    highlight_counts.calls, highlight_counts.game_on, highlight_counts.script_on = 0, 0, 0
+    highlight_counts.since = now
+end
 
 sdk.hook(sdk.find_type_definition("app.cEnemyLoopEffectHighlight"):get_method("isActivate"), function(args)
     highlight_effect = sdk.to_managed_object(args[2])
 end, function(retval)
     local effect = highlight_effect
     highlight_effect = nil
+    if settings.log_state then
+        highlight_counts.calls = highlight_counts.calls + 1
+        if (sdk.to_int64(retval) & 1) == 1 then
+            highlight_counts.game_on = highlight_counts.game_on + 1
+        end
+        if settings.wounds_only_while_focus_held and focus_button_held then
+            highlight_counts.script_on = highlight_counts.script_on + 1
+        end
+        log_highlight_counts()
+    end
     if not settings.wounds_only_while_focus_held or not effect then return retval end
     effect._IsAim = focus_button_held
     return sdk.to_ptr(focus_button_held and 1 or 0)
