@@ -29,7 +29,7 @@ local settings = {
 -- app.WeaponDef.TYPE: LONG_SWORD = 0 through ROD = 10 are melee. BOW, HEAVY_BOWGUN and LIGHT_BOWGUN follow.
 local LAST_MELEE_WEAPON_TYPE = 10
 -- app.PlayerKey.PAD
-local PAD_KEY_FOCUS_STRIKE = 2 -- ATTACK_SP
+local PAD_KEY_FOCUS_STRIKE = 3 -- ATTACK_SP_B, R1 on a pad (round 4 log)
 local PAD_KEY_FOCUS = 18 -- AIM
 -- app.HunterDef.ACTION_START_TURN_TYPE: the _AIM variants turn towards the camera.
 local START_TURN_FOR_AIM = { [3] = 1, [4] = 2 } -- LV1_AIM -> LV1, LV2_AIM -> LV2
