@@ -38,9 +38,6 @@ local PAD_KEY_FOCUS = 18 -- AIM
 -- app.HunterDef.ACTION_START_TURN_TYPE: the _AIM variants turn towards the camera.
 local START_TURN_FOR_AIM = { [3] = 1, [4] = 2 } -- LV1_AIM -> LV1, LV2_AIM -> LV2
 
--- app.GUIID.ID.UI020002, the HUD panel with the Focus Mode and slinger reticle.
-local GUI_ID_FOCUS_RETICLE = 50
-
 -- Frames the focus button is held on for the game after a Focus Strike press, so Focus Mode can
 -- start, and frames it stays on after the strike press is passed to the game.
 local STRIKE_WINDOW_FRAMES = 30
@@ -75,27 +72,13 @@ end
 -- against the character from PlayerManager instead. Its address is looked up once per frame,
 -- and only the address is kept, so no hook calls into an object from an earlier frame.
 local master_hunter_address = nil
-
--- The reticle shows while the script holds Focus Mode on for a strike. It is hidden with a melee
--- weapon drawn and given back to the game otherwise. Hiding is applied every frame in case the game
--- resets the flag, and showing only once so the game's own visibility is left alone.
-local focus_reticle_hidden = false
-
-local function set_focus_reticle_hidden(hidden)
-    if not hidden and not focus_reticle_hidden then return end
-    local gui_manager = sdk.get_managed_singleton("app.GUIManager")
-    if not gui_manager then return end
-    local display_control = gui_manager:get_HudDisplayManager():findDisplayControl(GUI_ID_FOCUS_RETICLE)
-    if not display_control then return end
-    display_control._TargetControl:set_ForceInvisible(hidden)
-    focus_reticle_hidden = hidden
-end
+local hide_focus_reticle_now = false
 
 re.on_frame(function()
     local master = get_master_hunter()
     master_hunter_address = master and master:get_address() or nil
     local melee_drawn = master ~= nil and is_melee(master) and master:get_IsWeaponOn()
-    set_focus_reticle_hidden(settings.hide_focus_reticle and settings.focus_strike_only and melee_drawn)
+    hide_focus_reticle_now = settings.hide_focus_reticle and settings.focus_strike_only and melee_drawn
 end)
 
 local function is_master_hunter(hunter)
@@ -260,6 +243,40 @@ end
 
 sdk.hook(hunter_type:get_method("rotateAimTurnLook"), skip_aim_turn_rotation)
 sdk.hook(hunter_type:get_method("rotateAimTurnLook_WpOffset"), skip_aim_turn_rotation)
+
+-- app.GUI020002 draws the Focus Mode and slinger reticle, and shows it while the script holds Focus Mode
+-- on for a strike. Round 7 showed that setting it invisible once per frame from re.on_frame does not
+-- stick, so it is applied right after the GUI's own updates. It is shown again only once, so the
+-- game's own visibility is left alone.
+local focus_reticle_gui = nil
+local focus_reticle_hidden = false
+
+local function apply_focus_reticle_visibility(gui)
+    if not hide_focus_reticle_now and not focus_reticle_hidden then return end
+    local display_control = sdk.get_managed_singleton("app.GUIManager"):get_HudDisplayManager()
+        :findDisplayControl(gui:get_ID())
+    display_control._TargetControl:set_ForceInvisible(hide_focus_reticle_now)
+    if focus_reticle_hidden ~= hide_focus_reticle_now then
+        log_line("focus reticle hidden=" .. tostring(hide_focus_reticle_now))
+    end
+    focus_reticle_hidden = hide_focus_reticle_now
+end
+
+local function hook_focus_reticle_update(method_name)
+    sdk.hook(sdk.find_type_definition("app.GUI020002"):get_method(method_name), function(args)
+        focus_reticle_gui = sdk.to_managed_object(args[2])
+    end, function(retval)
+        local gui = focus_reticle_gui
+        focus_reticle_gui = nil
+        if gui then
+            apply_focus_reticle_visibility(gui)
+        end
+        return retval
+    end)
+end
+
+hook_focus_reticle_update("guiHudUpdate")
+hook_focus_reticle_update("guiHudVisibleUpdate")
 
 local highlight_effect = nil
 
