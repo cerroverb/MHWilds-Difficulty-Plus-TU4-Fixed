@@ -5,7 +5,8 @@
 -- Ranged weapons and a sheathed weapon keep the game's behavior.
 -- Switches are in the REFramework menu under "Focus Rules" and are saved to reframework/data/FocusRules.json.
 -- With "Log focus state" on, focus state, the focus button and actions are written to re2_framework_log.txt.
--- Logging is off by default and its per-character hook is only installed when it is on at script load.
+-- Logging is on in test builds and off in releases. Its per-character hook is only installed when it
+-- is on at script load.
 --
 -- Method names come from the game's il2cpp_dump.json (REFramework SDK dump).
 -- Hook patterns follow Bimmr's MHWS-Weapon-Swapper (HunterCharacter.update, get_IsMaster,
@@ -19,7 +20,7 @@
 local CONFIG_PATH = "FocusRules.json"
 
 local settings = {
-    log_state = false,
+    log_state = true, -- false in releases
     focus_strike_only = true,
     no_aim_turning = true,
     wounds_only_while_focus_held = true,
