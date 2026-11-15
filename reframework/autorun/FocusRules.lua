@@ -24,7 +24,7 @@
 local CONFIG_PATH = "FocusRules.json"
 
 local settings = {
-    log_state = false, -- true in test builds
+    log_state = true, -- false in releases
     focus_strike_only = true,
     no_aim_turning = true,
     wounds_only_while_focus_held = true,
@@ -58,6 +58,12 @@ end
 
 load_settings()
 
+local function log_line(text)
+    if settings.log_state then
+        log.info("[FocusRules] " .. string.format("%.3f ", os.clock()) .. text)
+    end
+end
+
 local function get_master_hunter()
     local player_manager = sdk.get_managed_singleton("app.PlayerManager")
     if not player_manager then return nil end
@@ -79,7 +85,11 @@ local hide_focus_reticle_now = false
 
 re.on_frame(function()
     local master = get_master_hunter()
-    master_hunter_address = master and master:get_address() or nil
+    local address = master and master:get_address() or nil
+    if address ~= master_hunter_address then
+        log_line("master hunter " .. (address and string.format("%x", address) or "none"))
+    end
+    master_hunter_address = address
     local melee_drawn = master ~= nil and is_melee(master) and master:get_IsWeaponOn()
     hide_focus_reticle_now = settings.hide_focus_reticle and settings.focus_strike_only and melee_drawn
 end)
@@ -98,12 +108,6 @@ end
 
 local function hunter_from_args(args)
     return sdk.to_managed_object(args[2])
-end
-
-local function log_line(text)
-    if settings.log_state then
-        log.info("[FocusRules] " .. string.format("%.3f ", os.clock()) .. text)
-    end
 end
 
 -- Focus button state as the player pressed it, read before this script changes it.
