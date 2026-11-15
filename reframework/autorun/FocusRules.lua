@@ -272,9 +272,9 @@ end
 
 re.on_draw_ui(function()
     if not imgui.tree_node("Focus Rules") then return end
-    setting_checkbox("Focus button only for Focus Strikes (melee, drawn)", "focus_strike_only")
+    setting_checkbox("L2 alone does nothing, L2 + R1 does a Focus Strike (melee, weapon drawn)", "focus_strike_only")
     setting_checkbox("No turning towards the camera (melee)", "no_aim_turning")
-    setting_checkbox("Wounds only while focus button held", "wounds_only_while_focus_held")
+    setting_checkbox("Show wounds only while L2 is held", "wounds_only_while_focus_held")
     setting_checkbox("Log focus state (applies after Reset scripts)", "log_state")
     imgui.tree_pop()
 end)
