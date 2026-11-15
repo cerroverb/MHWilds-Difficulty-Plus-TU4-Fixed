@@ -1,34 +1,53 @@
--- Focus Mode rules prototype, round 3.
--- Each rule is off by default and can be switched in the REFramework menu under "Focus Rules".
--- With "Log focus state" on, changes in focus state, aim type and action are written to re2_framework_log.txt,
--- with a count of each hooked call made for the master hunter during the action.
+-- Focus Mode rules prototype, round 4.
+-- With a melee weapon drawn, the focus button on its own no longer enters Focus Mode.
+-- Focus button + Focus Strike button still performs a Focus Strike, turned only the way a normal
+-- attack turns, never towards the camera. Monster wounds are highlighted while the focus button is held.
+-- Ranged weapons and a sheathed weapon keep the game's behavior.
+-- Switches are in the REFramework menu under "Focus Rules" and are saved to reframework/data/FocusRules.json.
+-- With "Log focus state" on, focus state, the focus button and actions are written to re2_framework_log.txt.
 --
 -- Method names come from the game's il2cpp_dump.json (REFramework SDK dump).
 -- Hook patterns follow Bimmr's MHWS-Weapon-Swapper (HunterCharacter.update, get_IsMaster,
--- BaseActionController:get_CurrentAction) and MHWS-Buffer (getMasterPlayerInfo, SKIP_ORIGINAL,
--- replacing a return value with sdk.to_ptr): https://github.com/Bimmr
--- Reading the focus button follows get_input() and getKey() in DerKleineLi's MHWs-MIGGA
+-- BaseActionController:get_CurrentAction, json config) and MHWS-Buffer (getMasterPlayerInfo,
+-- SKIP_ORIGINAL, replacing a return value with sdk.to_ptr): https://github.com/Bimmr
+-- Reading keys follows getKey() on the command controller's merged input in DerKleineLi's MHWs-MIGGA
 -- (Kinsect_dont_come_back.lua): https://github.com/DerKleineLi/MHWs-MIGGA
--- The wound highlight switch follows kmy0's HudController (hud/hook/options/scar.lua), which sets
+-- The wound highlight follows kmy0's HudController (hud/hook/options/scar.lua), which sets
 -- app.cEnemyLoopEffectHighlight._IsAim from a hook on isActivate(): https://github.com/kmy0/HudController
+
+local CONFIG_PATH = "FocusRules.json"
 
 local settings = {
     log_state = true,
-    block_focus_input = false,
-    block_aim_type_update = false,
-    block_focus_aim_type = false,
-    block_aim_turn_check = false,
-    block_aim_turn_rotation = false,
-    wounds_only_while_focus_held = false,
+    focus_strike_only = true,
+    no_aim_turning = true,
+    wounds_only_while_focus_held = true,
 }
 
 -- app.WeaponDef.TYPE: LONG_SWORD = 0 through ROD = 10 are melee. BOW, HEAVY_BOWGUN and LIGHT_BOWGUN follow.
 local LAST_MELEE_WEAPON_TYPE = 10
--- app.HunterDef.AIM_TYPE values seen in round 1: melee Focus Mode sets POINT_ATTACK.
-local AIM_TYPE_NONE = 0
-local AIM_TYPE_POINT_ATTACK = 3
--- app.PlayerKey.PAD.AIM, the Focus Mode button.
-local PAD_KEY_AIM = 18
+-- app.PlayerKey.PAD
+local PAD_KEY_FOCUS_STRIKE = 2 -- ATTACK_SP
+local PAD_KEY_FOCUS = 18 -- AIM
+-- app.HunterDef.ACTION_START_TURN_TYPE: the _AIM variants turn towards the camera.
+local START_TURN_FOR_AIM = { [3] = 1, [4] = 2 } -- LV1_AIM -> LV1, LV2_AIM -> LV2
+
+-- Frames the focus button is held on for the game after a Focus Strike press, so Focus Mode can
+-- start, and frames it stays on after the strike press is passed to the game.
+local STRIKE_WINDOW_FRAMES = 30
+local FRAMES_AFTER_STRIKE = 10
+
+local function load_settings()
+    local saved = json.load_file(CONFIG_PATH)
+    if not saved then return end
+    for key in pairs(settings) do
+        if saved[key] ~= nil then
+            settings[key] = saved[key]
+        end
+    end
+end
+
+load_settings()
 
 local function get_master_hunter()
     local player_manager = sdk.get_managed_singleton("app.PlayerManager")
@@ -36,24 +55,6 @@ local function get_master_hunter()
     local player_info = player_manager:getMasterPlayerInfo()
     if not player_info then return nil end
     return player_info:get_Character()
-end
-
-local function get_master_input()
-    local player_manager = sdk.get_managed_singleton("app.PlayerManager")
-    if not player_manager then return nil end
-    local player_info = player_manager:getMasterPlayer()
-    if not player_info then return nil end
-    -- MIGGA reads get_Master() here. The current game's holder has get_Hunter() instead.
-    local controller = player_info:get_Controller():get_ControllerEntityHolder():get_Hunter()
-    if not controller or not controller:get_type_definition():is_a("app.cMasterPlayerControllerEntity") then
-        return nil
-    end
-    return controller:get_CommandController():get_MergedVirtualInput()
-end
-
-local function is_focus_button_held()
-    local input = get_master_input()
-    return input ~= nil and input:getKey(PAD_KEY_AIM):get_On()
 end
 
 local function is_melee(hunter)
@@ -72,39 +73,147 @@ local function is_master_melee(hunter)
     return is_master_hunter(hunter) and is_melee(hunter)
 end
 
-local function is_master_melee_context(context)
-    local master = get_master_hunter()
-    return master ~= nil and is_melee(master)
-        and context:get_address() == master:get_HunterContext():get_address()
+local function is_master_melee_drawn(hunter)
+    return is_master_melee(hunter) and hunter:get_IsWeaponOn()
 end
 
 local function hunter_from_args(args)
     return sdk.to_managed_object(args[2])
 end
 
--- Hooked calls for the master hunter during the current action, logged when the action changes.
-local call_counts = {}
-
-local function count_call(name)
-    call_counts[name] = (call_counts[name] or 0) + 1
-end
-
-local function format_call_counts()
-    local names = {}
-    for name in pairs(call_counts) do
-        table.insert(names, name)
-    end
-    table.sort(names)
-    local parts = {}
-    for _, name in ipairs(names) do
-        table.insert(parts, name .. "=" .. call_counts[name])
-    end
-    return table.concat(parts, " ")
-end
-
 local function log_line(text)
-    log.info("[FocusRules] " .. string.format("%.3f ", os.clock()) .. text)
+    if settings.log_state then
+        log.info("[FocusRules] " .. string.format("%.3f ", os.clock()) .. text)
+    end
 end
+
+-- Focus button state as the player pressed it, read before this script changes it.
+local focus_button_held = false
+
+local strike = { frames_left = 0, pending = false }
+
+local function reset_strike()
+    strike.frames_left = 0
+    strike.pending = false
+end
+
+local function start_strike_window(strike_key)
+    strike.frames_left = STRIKE_WINDOW_FRAMES
+    strike.pending = true
+    strike_key:clear()
+    log_line("strike armed")
+end
+
+local function hold_focus_for_strike(hunter, focus_key, strike_key)
+    strike.frames_left = strike.frames_left - 1
+    focus_key:set_On(true)
+    if strike.pending and hunter:get_HunterContext():get_IsAim() then
+        strike_key:set_On(true)
+        strike_key:set_OnTrigger(true)
+        strike.pending = false
+        strike.frames_left = math.min(strike.frames_left, FRAMES_AFTER_STRIKE)
+        log_line("strike passed to game")
+    elseif strike.frames_left == 0 and strike.pending then
+        log_line("strike window ended before Focus Mode started")
+    end
+end
+
+-- app.PlayerKey.PAD ATTACK_00 to ATTACK_SP_B, logged while the focus button is held to confirm
+-- which one the game uses for Focus Strikes.
+local ATTACK_KEYS = { 0, 1, 2, 3 }
+
+local function log_attack_presses(input)
+    for _, key_index in ipairs(ATTACK_KEYS) do
+        if input:getKey(key_index):get_OnTrigger() then
+            log_line("attack key " .. key_index .. " pressed with focus button held")
+        end
+    end
+end
+
+-- The command controller merges pad and keyboard input here, before the game reads its commands.
+local merging_controller = nil
+
+sdk.hook(sdk.find_type_definition("app.cPlayerCommandController"):get_method("mergeAndUpdateInput"), function(args)
+    merging_controller = sdk.to_managed_object(args[2])
+end, function(retval)
+    local controller = merging_controller
+    merging_controller = nil
+    local hunter = controller and controller:get_Character()
+    if not is_master_hunter(hunter) then return retval end
+
+    local input = controller:get_MergedVirtualInput()
+    local focus_key = input:getKey(PAD_KEY_FOCUS)
+    local strike_key = input:getKey(PAD_KEY_FOCUS_STRIKE)
+    focus_button_held = focus_key:get_On()
+    if focus_button_held then
+        log_attack_presses(input)
+    end
+
+    if not settings.focus_strike_only or not is_master_melee_drawn(hunter) then
+        reset_strike()
+        return retval
+    end
+    if strike.frames_left == 0 and focus_button_held and strike_key:get_OnTrigger() then
+        start_strike_window(strike_key)
+    end
+    if strike.frames_left > 0 then
+        hold_focus_for_strike(hunter, focus_key, strike_key)
+    else
+        focus_key:clear()
+    end
+    return retval
+end)
+
+-- Focus Strikes and other Focus Mode actions start with an _AIM turn towards the camera.
+-- Using the plain turn makes them turn like a normal attack.
+sdk.hook(sdk.find_type_definition("app.HunterCharacter"):get_method("beginActionStartTurn"), function(args)
+    if not settings.no_aim_turning or not is_master_melee(hunter_from_args(args)) then return end
+    local turn_type = sdk.to_int64(args[4]) & 0xFFFFFFFF
+    local plain_turn = START_TURN_FOR_AIM[turn_type]
+    if plain_turn then
+        args[4] = sdk.to_ptr(plain_turn)
+        log_line(string.format("start turn %d -> %d", turn_type, plain_turn))
+    end
+end)
+
+-- Round 1 and 2 logs: in Focus Mode the hunter turns to the camera through rotateAimTurnLook,
+-- gated by isEnableAimTurn.
+local hunter_type = sdk.find_type_definition("app.HunterCharacter")
+local aim_turn_check_hunter = nil
+
+sdk.hook(hunter_type:get_method("isEnableAimTurn"), function(args)
+    aim_turn_check_hunter = hunter_from_args(args)
+end, function(retval)
+    local hunter = aim_turn_check_hunter
+    aim_turn_check_hunter = nil
+    if settings.no_aim_turning and is_master_melee(hunter) then
+        return sdk.to_ptr(0)
+    end
+    return retval
+end)
+
+local function skip_aim_turn_rotation(args)
+    if settings.no_aim_turning and is_master_melee(hunter_from_args(args)) then
+        return sdk.PreHookResult.SKIP_ORIGINAL
+    end
+end
+
+sdk.hook(hunter_type:get_method("rotateAimTurnLook"), skip_aim_turn_rotation)
+sdk.hook(hunter_type:get_method("rotateAimTurnLook_WpOffset"), skip_aim_turn_rotation)
+
+local highlight_effect = nil
+
+sdk.hook(sdk.find_type_definition("app.cEnemyLoopEffectHighlight"):get_method("isActivate"), function(args)
+    highlight_effect = sdk.to_managed_object(args[2])
+end, function(retval)
+    local effect = highlight_effect
+    highlight_effect = nil
+    if not settings.wounds_only_while_focus_held or not effect then return retval end
+    effect._IsAim = focus_button_held
+    return sdk.to_ptr(focus_button_held and 1 or 0)
+end)
+
+local last_state = {}
 
 local function read_focus_state(hunter)
     local context = hunter:get_HunterContext()
@@ -113,36 +222,23 @@ local function read_focus_state(hunter)
         is_aim = context:get_IsAim(),
         aim_type = context:get_AimType(),
         action = action and action:get_type_definition():get_full_name() or "none",
-        aim_turned = hunter:get_CurrentActionInfo():get_IsAimTurned(),
-        focus_button = is_focus_button_held(),
+        focus_button = focus_button_held,
     }
 end
-
-local last_state = {}
 
 local function log_state_changes(hunter)
     local state = read_focus_state(hunter)
     if state.action ~= last_state.action then
-        if last_state.action then
-            log_line("action end " .. last_state.action .. " " .. format_call_counts())
-        end
-        call_counts = {}
-        log_line("action start " .. state.action)
+        log_line("action " .. state.action)
     end
     if state.is_aim ~= last_state.is_aim or state.aim_type ~= last_state.aim_type then
         log_line(string.format("focus is_aim=%s aim_type=%d", tostring(state.is_aim), state.aim_type))
-    end
-    if state.aim_turned ~= last_state.aim_turned then
-        log_line("aim_turned=" .. tostring(state.aim_turned))
     end
     if state.focus_button ~= last_state.focus_button then
         log_line("focus_button=" .. tostring(state.focus_button))
     end
     last_state = state
 end
-
-local hunter_type = sdk.find_type_definition("app.HunterCharacter")
-local master_controller_type = sdk.find_type_definition("app.cMasterPlayerControllerEntity")
 
 -- update is inherited from app.CharacterBase, so this hook also runs for monsters and NPCs.
 sdk.hook(hunter_type:get_method("update"), function(args)
@@ -153,88 +249,20 @@ sdk.hook(hunter_type:get_method("update"), function(args)
     log_state_changes(hunter)
 end)
 
--- Skips a master controller method for melee weapons when its switch is on, and counts the calls.
-local function hook_master_controller(method_name, setting_name)
-    sdk.hook(master_controller_type:get_method(method_name), function()
-        if not is_master_melee(get_master_hunter()) then return end
-        count_call(method_name)
-        if settings[setting_name] then
-            return sdk.PreHookResult.SKIP_ORIGINAL
-        end
-    end)
-end
-
-hook_master_controller("updateAimCommand", "block_focus_input")
-hook_master_controller("updateAimType", "block_aim_type_update")
-
--- Round 1 showed melee Focus Mode as AIM_TYPE POINT_ATTACK. Replacing it with NONE should keep
--- Focus Mode from starting, while slinger and other aim types still pass.
-sdk.hook(sdk.find_type_definition("app.cHunterContext"):get_method("set_AimType"), function(args)
-    local context = sdk.to_managed_object(args[2])
-    if not is_master_melee_context(context) then return end
-    local aim_type = sdk.to_int64(args[3]) & 0xFFFFFFFF
-    count_call("set_AimType_" .. aim_type)
-    if settings.block_focus_aim_type and aim_type == AIM_TYPE_POINT_ATTACK then
-        args[3] = sdk.to_ptr(AIM_TYPE_NONE)
-    end
-end)
-
-local aim_turn_check_hunter = nil
-
-sdk.hook(hunter_type:get_method("isEnableAimTurn"), function(args)
-    aim_turn_check_hunter = hunter_from_args(args)
-end, function(retval)
-    local hunter = aim_turn_check_hunter
-    aim_turn_check_hunter = nil
-    if not is_master_melee(hunter) then return retval end
-    count_call("isEnableAimTurn_" .. tostring((sdk.to_int64(retval) & 1) == 1))
-    if settings.block_aim_turn_check then
-        return sdk.to_ptr(0)
-    end
-    return retval
-end)
-
-local function on_aim_turn_rotation(args)
-    if not is_master_melee(hunter_from_args(args)) then return end
-    count_call("rotateAimTurnLook")
-    if settings.block_aim_turn_rotation then
-        return sdk.PreHookResult.SKIP_ORIGINAL
-    end
-end
-
-sdk.hook(hunter_type:get_method("rotateAimTurnLook"), on_aim_turn_rotation)
-sdk.hook(hunter_type:get_method("rotateAimTurnLook_WpOffset"), on_aim_turn_rotation)
-
--- Monster wounds are highlighted only while the focus button is held, whether or not Focus Mode starts.
-local highlight_effect = nil
-
-sdk.hook(sdk.find_type_definition("app.cEnemyLoopEffectHighlight"):get_method("isActivate"), function(args)
-    highlight_effect = sdk.to_managed_object(args[2])
-end, function(retval)
-    local effect = highlight_effect
-    highlight_effect = nil
-    if not settings.wounds_only_while_focus_held or not effect then return retval end
-    local held = is_focus_button_held()
-    effect._IsAim = held
-    return sdk.to_ptr(held and 1 or 0)
-end)
-
 local function setting_checkbox(label, key)
     local changed, value = imgui.checkbox(label, settings[key])
     if changed then
         settings[key] = value
+        json.dump_file(CONFIG_PATH, settings)
         log_line(string.format("setting %s=%s", key, tostring(value)))
     end
 end
 
 re.on_draw_ui(function()
     if not imgui.tree_node("Focus Rules") then return end
-    setting_checkbox("Log focus state", "log_state")
-    setting_checkbox("Block focus input (melee)", "block_focus_input")
-    setting_checkbox("Block aim type update (melee)", "block_aim_type_update")
-    setting_checkbox("Block focus aim type (melee)", "block_focus_aim_type")
-    setting_checkbox("Block aim turn check (melee)", "block_aim_turn_check")
-    setting_checkbox("Block aim turn rotation (melee)", "block_aim_turn_rotation")
+    setting_checkbox("Focus button only for Focus Strikes (melee, drawn)", "focus_strike_only")
+    setting_checkbox("No turning towards the camera (melee)", "no_aim_turning")
     setting_checkbox("Wounds only while focus button held", "wounds_only_while_focus_held")
+    setting_checkbox("Log focus state", "log_state")
     imgui.tree_pop()
 end)
