@@ -1,7 +1,8 @@
 -- Focus Mode rules prototype, round 6.
 -- With a melee weapon drawn, the focus button on its own no longer enters Focus Mode, and the focus
 -- reticle stays hidden. Focus button + R1 still performs a Focus Strike, turned only the way a normal
--- attack turns, never towards the camera. R1 on its own keeps its normal use.
+-- attack turns, never towards the camera. R1 on its own keeps its normal use, unless "R1 alone does
+-- the Focus Strike" is on, in which case R1 alone strikes and no longer sheathes.
 -- Monster wounds are highlighted while the focus button is held.
 -- Ranged weapons and a sheathed weapon keep the game's behavior.
 -- Switches are in the REFramework menu under "Focus Rules" and are saved to reframework/data/FocusRules.json.
@@ -28,6 +29,7 @@ local settings = {
     no_aim_turning = true,
     wounds_only_while_focus_held = true,
     hide_focus_reticle = true,
+    strike_on_r1_alone = false,
 }
 
 -- app.WeaponDef.TYPE: LONG_SWORD = 0 through ROD = 10 are melee. BOW, HEAVY_BOWGUN and LIGHT_BOWGUN follow.
@@ -196,7 +198,8 @@ end, function(retval)
         reset_strike()
         return retval
     end
-    if strike.frames_left == 0 and focus_button_held and strike_key:get_OnTrigger() then
+    local strike_pressed = strike_key:get_OnTrigger() and (focus_button_held or settings.strike_on_r1_alone)
+    if strike.frames_left == 0 and strike_pressed then
         start_strike_window(hunter, strike_key)
     end
     if strike.frames_left > 0 then
@@ -371,6 +374,7 @@ re.on_draw_ui(function()
     setting_checkbox("No turning towards the camera (melee)", "no_aim_turning")
     setting_checkbox("Show wounds only while L2 is held", "wounds_only_while_focus_held")
     setting_checkbox("Hide the focus reticle (melee, weapon drawn)", "hide_focus_reticle")
+    setting_checkbox("R1 alone does the Focus Strike, R1 no longer sheathes (melee, weapon drawn)", "strike_on_r1_alone")
     setting_checkbox("Log focus state (applies after Reset scripts)", "log_state")
     imgui.tree_pop()
 end)
