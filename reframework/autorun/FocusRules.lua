@@ -29,6 +29,7 @@ local settings = {
     no_aim_turning = true,
     wounds_only_while_focus_held = true,
     hide_focus_reticle = true,
+    no_focus_camera = true,
     strike_on_r1_alone = false,
 }
 
@@ -247,11 +248,26 @@ end
 sdk.hook(hunter_type:get_method("rotateAimTurnLook"), skip_aim_turn_rotation)
 sdk.hook(hunter_type:get_method("rotateAimTurnLook_WpOffset"), skip_aim_turn_rotation)
 
+-- Round 12: the camera zooms in briefly during a strike, while the script holds Focus Mode on.
+-- app.cHunterCameraRequest.requestAim is the hunter's request for the Focus Mode camera, so it is
+-- skipped while the strike window is open. Outside the window Focus Mode never starts for a drawn
+-- melee weapon, so nothing else is affected.
+sdk.hook(sdk.find_type_definition("app.cHunterCameraRequest"):get_method("requestAim"), function()
+    if settings.no_focus_camera and strike.frames_left > 0 then
+        log_line("focus camera request skipped")
+        return sdk.PreHookResult.SKIP_ORIGINAL
+    end
+end)
+
 -- Reticle panels shown while the script holds Focus Mode on for a strike. Round 9 hid UI020002 alone
 -- and the crosshair still flashed. kmy0's HudController maps the focus reticle (UI020002) onto the
 -- general reticle HUD (UI020000) in data/ace.lua (hudless_to_hud), so both are hidden.
 -- GUIID values are from app.GUIID.ID in the SDK dump.
 local FOCUS_RETICLE_GUI_IDS = { 46, 50 } -- UI020000, UI020002
+-- Round 10 and 12 logs: GUI020016 turned visible at every strike and invisible after it. It is hidden
+-- only while the strike window is open, since it also shows outside Focus Mode.
+local STRIKE_ONLY_GUI_ID = 61 -- UI020016
+local strike_panel_hidden = false
 local focus_reticle_hidden = false
 
 local function get_hud_display_manager()
@@ -278,6 +294,16 @@ local function apply_focus_reticle_visibility(display_manager)
     focus_reticle_hidden = hide_focus_reticle_now
 end
 
+local function apply_strike_panel_visibility(display_manager)
+    local hide = settings.hide_focus_reticle and strike.frames_left > 0
+    if not hide and not strike_panel_hidden then return end
+    local display_control = display_manager:findDisplayControl(STRIKE_ONLY_GUI_ID)
+    if display_control and display_control._TargetControl then
+        display_control._TargetControl:set_ForceInvisible(hide)
+    end
+    strike_panel_hidden = hide
+end
+
 -- Test builds only: logs every HUD panel that turns visible or invisible while a melee weapon is
 -- drawn, to find the panel that draws the crosshair during strikes.
 local hud_panel_visible = {}
@@ -302,6 +328,7 @@ sdk.hook(sdk.find_type_definition("app.GUIManager"):get_method("lateUpdateApp"),
     local display_manager = get_hud_display_manager()
     if not display_manager then return retval end
     apply_focus_reticle_visibility(display_manager)
+    apply_strike_panel_visibility(display_manager)
     if settings.log_state and hide_focus_reticle_now then
         log_hud_panel_changes(display_manager)
     end
@@ -399,6 +426,7 @@ re.on_draw_ui(function()
     setting_checkbox("No turning towards the camera (melee)", "no_aim_turning")
     setting_checkbox("Show wounds only while L2 is held", "wounds_only_while_focus_held")
     setting_checkbox("Hide the focus reticle (melee, weapon drawn)", "hide_focus_reticle")
+    setting_checkbox("No Focus Mode camera zoom during Focus Strikes", "no_focus_camera")
     setting_checkbox("R1 alone does the Focus Strike, R1 no longer sheathes (melee, weapon drawn)", "strike_on_r1_alone")
     setting_checkbox("Log focus state (applies after Reset scripts)", "log_state")
     imgui.tree_pop()
