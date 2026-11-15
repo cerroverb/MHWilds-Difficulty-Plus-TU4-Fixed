@@ -24,7 +24,7 @@
 local CONFIG_PATH = "FocusRules.json"
 
 local settings = {
-    log_state = true, -- false in releases
+    log_state = false, -- true in test builds
     focus_strike_only = true,
     no_aim_turning = true,
     wounds_only_while_focus_held = true,
