@@ -82,6 +82,7 @@ end
 -- and only the address is kept, so no hook calls into an object from an earlier frame.
 local master_hunter_address = nil
 local hide_focus_reticle_now = false
+local melee_rules_active = false
 
 re.on_frame(function()
     local master = get_master_hunter()
@@ -91,7 +92,8 @@ re.on_frame(function()
     end
     master_hunter_address = address
     local melee_drawn = master ~= nil and is_melee(master) and master:get_IsWeaponOn()
-    hide_focus_reticle_now = settings.hide_focus_reticle and settings.focus_strike_only and melee_drawn
+    melee_rules_active = settings.focus_strike_only and melee_drawn
+    hide_focus_reticle_now = settings.hide_focus_reticle and melee_rules_active
 end)
 
 local function is_master_hunter(hunter)
@@ -254,8 +256,10 @@ sdk.hook(hunter_type:get_method("rotateAimTurnLook_WpOffset"), skip_aim_turn_rot
 
 -- Round 12: the camera zooms in briefly during a strike, while the script holds Focus Mode on.
 -- Round 13 showed app.cHunterCameraRequest.requestAim is not called then. The zoom is most likely the aim
--- field of view, read through these two getters, so while the strike window is open they return
--- the normal field of view instead. sdk.float_to_ptr is REFramework's float return value.
+-- field of view, read through these two getters. Round 14 returned the normal field of view only while
+-- the strike window was open, and the camera jolted when the value switched mid-strike. They now return
+-- the normal field of view the whole time a melee weapon is drawn, when Focus Mode can only start for
+-- a strike anyway. sdk.float_to_ptr is REFramework's float return value.
 local function hook_aim_fov(type_name, aim_fov_method, base_fov_method)
     local param = nil
     sdk.hook(sdk.find_type_definition(type_name):get_method(aim_fov_method), function(args)
@@ -263,7 +267,7 @@ local function hook_aim_fov(type_name, aim_fov_method, base_fov_method)
     end, function(retval)
         local owner = param
         param = nil
-        if not settings.no_focus_camera or strike.frames_left == 0 or not owner then return retval end
+        if not settings.no_focus_camera or not melee_rules_active or not owner then return retval end
         return sdk.float_to_ptr(owner:call(base_fov_method))
     end)
 end
