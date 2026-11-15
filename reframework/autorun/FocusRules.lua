@@ -24,11 +24,12 @@
 local CONFIG_PATH = "FocusRules.json"
 
 local settings = {
-    log_state = false,
+    log_state = true, -- false in releases
     focus_strike_only = true,
     no_aim_turning = true,
     wounds_only_while_focus_held = true,
     hide_focus_reticle = true,
+    no_target_pull = true,
     strike_on_r1_alone = false,
 }
 
@@ -129,12 +130,16 @@ local function reset_strike()
     strike.sent = false
 end
 
+-- Calls blocked by "No pull towards the target" during the current strike, logged when it ends.
+local target_pull_blocks = {}
+
 local function start_strike_window(hunter, strike_key)
     strike.frames_left = STRIKE_WINDOW_FRAMES
     strike.pending = true
     strike.sent = false
     strike.start_action = current_action_name(hunter)
     strike_key:clear()
+    target_pull_blocks = {}
     log_line("strike armed during " .. strike.start_action)
 end
 
@@ -158,7 +163,11 @@ local function hold_focus_for_strike(hunter, focus_key, strike_key)
     if strike.sent and action ~= strike.start_action and not FOCUS_STANCE_ACTIONS[action] then
         strike.pending = false
         strike.frames_left = math.min(strike.frames_left, FRAMES_AFTER_STRIKE)
-        log_line("strike ended in " .. action)
+        local blocked = {}
+        for name, count in pairs(target_pull_blocks) do
+            table.insert(blocked, name .. "=" .. count)
+        end
+        log_line("strike ended in " .. action .. " target pull blocked " .. table.concat(blocked, " "))
     elseif hunter:get_HunterContext():get_IsAim() then
         send_strike_press(strike_key)
     end
@@ -250,6 +259,28 @@ end
 
 sdk.hook(hunter_type:get_method("rotateAimTurnLook"), skip_aim_turn_rotation)
 sdk.hook(hunter_type:get_method("rotateAimTurnLook_WpOffset"), skip_aim_turn_rotation)
+
+-- A Focus Strike picks a target on the monster (decideAimAttackSightPos, onAimAttackTargetDecided on
+-- the weapon handling) and keeps tracking it during the attack (acAimTargetHold.updateTargetPos).
+-- Analysis of the SDK dump points to that target as the source of the pull towards the wound, so
+-- with this switch on no target is set and the strike moves the way its animation does.
+local function block_target_pull(hunter, name)
+    if not settings.no_target_pull or not is_master_melee(hunter) then return end
+    target_pull_blocks[name] = (target_pull_blocks[name] or 0) + 1
+    return sdk.PreHookResult.SKIP_ORIGINAL
+end
+
+local weapon_handling_type = sdk.find_type_definition("app.cHunterWeaponHandlingBase")
+for _, method_name in ipairs({ "decideAimAttackSightPos", "onAimAttackTargetDecided" }) do
+    sdk.hook(weapon_handling_type:get_method(method_name), function(args)
+        return block_target_pull(sdk.to_managed_object(args[2]):get_Hunter(), method_name)
+    end)
+end
+
+sdk.hook(sdk.find_type_definition("app.PlayerCommonActionComponent.acAimTargetHold"):get_method("updateTargetPos"),
+    function(args)
+        return block_target_pull(sdk.to_managed_object(args[2]):get_Chara(), "updateTargetPos")
+    end)
 
 -- Reticle panels shown while the script holds Focus Mode on for a strike. kmy0's HudController maps
 -- the focus reticle (UI020002) onto the general reticle HUD (UI020000) in data/ace.lua
@@ -417,6 +448,7 @@ re.on_draw_ui(function()
     setting_checkbox("No turning towards the camera (melee)", "no_aim_turning")
     setting_checkbox("Show wounds only while L2 is held", "wounds_only_while_focus_held")
     setting_checkbox("Hide the focus reticle (melee, weapon drawn)", "hide_focus_reticle")
+    setting_checkbox("No pull towards the target on Focus Strikes (melee)", "no_target_pull")
     setting_checkbox("R1 alone does the Focus Strike, R1 no longer sheathes (melee, weapon drawn)", "strike_on_r1_alone")
     setting_checkbox("Log focus state (applies after Reset scripts)", "log_state")
     imgui.tree_pop()
