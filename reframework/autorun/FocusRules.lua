@@ -1,7 +1,8 @@
--- Focus Mode rules prototype, round 5.
--- With a melee weapon drawn, the focus button no longer enters Focus Mode, and R1 on its own performs
--- a Focus Strike instead of sheathing (sprinting still sheathes). The strike turns only the way a normal
--- attack turns, never towards the camera. Monster wounds are highlighted while the focus button is held.
+-- Focus Mode rules prototype, round 6.
+-- With a melee weapon drawn, the focus button on its own no longer enters Focus Mode, and the focus
+-- reticle stays hidden. Focus button + R1 still performs a Focus Strike, turned only the way a normal
+-- attack turns, never towards the camera. R1 on its own keeps its normal use.
+-- Monster wounds are highlighted while the focus button is held.
 -- Ranged weapons and a sheathed weapon keep the game's behavior.
 -- Switches are in the REFramework menu under "Focus Rules" and are saved to reframework/data/FocusRules.json.
 -- With "Log focus state" on, focus state, the focus button and actions are written to re2_framework_log.txt.
@@ -15,7 +16,9 @@
 -- Reading keys follows getKey() on the command controller's merged input in DerKleineLi's MHWs-MIGGA
 -- (Kinsect_dont_come_back.lua): https://github.com/DerKleineLi/MHWs-MIGGA
 -- The wound highlight follows kmy0's HudController (hud/hook/options/scar.lua), which sets
--- app.cEnemyLoopEffectHighlight._IsAim from a hook on isActivate(): https://github.com/kmy0/HudController
+-- app.cEnemyLoopEffectHighlight._IsAim from a hook on isActivate(), and hiding the reticle follows its
+-- slinger_reticle element (findDisplayControl, _TargetControl, set_ForceInvisible):
+-- https://github.com/kmy0/HudController
 
 local CONFIG_PATH = "FocusRules.json"
 
@@ -24,6 +27,7 @@ local settings = {
     focus_strike_only = true,
     no_aim_turning = true,
     wounds_only_while_focus_held = true,
+    hide_focus_reticle = true,
 }
 
 -- app.WeaponDef.TYPE: LONG_SWORD = 0 through ROD = 10 are melee. BOW, HEAVY_BOWGUN and LIGHT_BOWGUN follow.
@@ -34,8 +38,11 @@ local PAD_KEY_FOCUS = 18 -- AIM
 -- app.HunterDef.ACTION_START_TURN_TYPE: the _AIM variants turn towards the camera.
 local START_TURN_FOR_AIM = { [3] = 1, [4] = 2 } -- LV1_AIM -> LV1, LV2_AIM -> LV2
 
--- Frames the focus button is held on for the game after an R1 press, so Focus Mode can start and
--- the game reads the press as a Focus Strike, and frames it stays on after the press is passed on.
+-- app.GUIID.ID.UI020002, the HUD panel with the Focus Mode and slinger reticle.
+local GUI_ID_FOCUS_RETICLE = 50
+
+-- Frames the focus button is held on for the game after a Focus Strike press, so Focus Mode can
+-- start, and frames it stays on after the strike press is passed to the game.
 local STRIKE_WINDOW_FRAMES = 30
 local FRAMES_AFTER_STRIKE = 10
 
@@ -69,9 +76,26 @@ end
 -- and only the address is kept, so no hook calls into an object from an earlier frame.
 local master_hunter_address = nil
 
+-- The reticle shows while the script holds Focus Mode on for a strike. It is hidden with a melee
+-- weapon drawn and given back to the game otherwise. Hiding is applied every frame in case the game
+-- resets the flag, and showing only once so the game's own visibility is left alone.
+local focus_reticle_hidden = false
+
+local function set_focus_reticle_hidden(hidden)
+    if not hidden and not focus_reticle_hidden then return end
+    local gui_manager = sdk.get_managed_singleton("app.GUIManager")
+    if not gui_manager then return end
+    local display_control = gui_manager:get_HudDisplayManager():findDisplayControl(GUI_ID_FOCUS_RETICLE)
+    if not display_control then return end
+    display_control._TargetControl:set_ForceInvisible(hidden)
+    focus_reticle_hidden = hidden
+end
+
 re.on_frame(function()
     local master = get_master_hunter()
     master_hunter_address = master and master:get_address() or nil
+    local melee_drawn = master ~= nil and is_melee(master) and master:get_IsWeaponOn()
+    set_focus_reticle_hidden(settings.hide_focus_reticle and settings.focus_strike_only and melee_drawn)
 end)
 
 local function is_master_hunter(hunter)
@@ -189,7 +213,7 @@ end, function(retval)
         reset_strike()
         return retval
     end
-    if strike.frames_left == 0 and strike_key:get_OnTrigger() then
+    if strike.frames_left == 0 and focus_button_held and strike_key:get_OnTrigger() then
         start_strike_window(hunter, strike_key)
     end
     if strike.frames_left > 0 then
@@ -299,9 +323,10 @@ end
 
 re.on_draw_ui(function()
     if not imgui.tree_node("Focus Rules") then return end
-    setting_checkbox("No Focus Mode, R1 does a Focus Strike (melee, weapon drawn)", "focus_strike_only")
+    setting_checkbox("L2 alone does nothing, L2 + R1 does a Focus Strike (melee, weapon drawn)", "focus_strike_only")
     setting_checkbox("No turning towards the camera (melee)", "no_aim_turning")
     setting_checkbox("Show wounds only while L2 is held", "wounds_only_while_focus_held")
+    setting_checkbox("Hide the focus reticle (melee, weapon drawn)", "hide_focus_reticle")
     setting_checkbox("Log focus state (applies after Reset scripts)", "log_state")
     imgui.tree_pop()
 end)
