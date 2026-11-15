@@ -4,6 +4,8 @@
 -- attack turns, never towards the camera. R1 on its own keeps its normal use, unless "R1 alone does
 -- the Focus Strike" is on, in which case R1 alone strikes and no longer sheathes.
 -- Monster wounds are highlighted while the focus button is held.
+-- With an Insect Glaive, focus button + B during the charged attack with all three extracts still
+-- does the Rising Spiral Slash.
 -- Ranged weapons and a sheathed weapon keep the game's behavior.
 -- Switches are in the REFramework menu under "Focus Rules" and are saved to reframework/data/FocusRules.json.
 -- With "Log focus state" on, focus state, the focus button and actions are written to re2_framework_log.txt.
@@ -30,6 +32,7 @@ local settings = {
     wounds_only_while_focus_held = true,
     hide_focus_reticle = true,
     no_target_pull = true,
+    rising_spiral_slash = true,
     strike_on_r1_alone = false,
 }
 
@@ -38,6 +41,11 @@ local LAST_MELEE_WEAPON_TYPE = 10
 -- app.PlayerKey.PAD
 local PAD_KEY_FOCUS_STRIKE = 3 -- ATTACK_SP_B, R1 on a pad
 local PAD_KEY_FOCUS = 18 -- AIM
+local PAD_KEY_ATTACK_01 = 1 -- B on a pad
+-- Insect Glaive (app.WeaponDef.TYPE ROD). Its Rising Spiral Slash is the focus button + B during the
+-- charged attack with all three extracts (Wp10Action.cHoldAttackSuper).
+local INSECT_GLAIVE = 10
+local RISING_SPIRAL_SLASH_FROM = "cHoldAttackSuper"
 -- app.HunterDef.ACTION_START_TURN_TYPE: the _AIM variants turn towards the camera.
 local START_TURN_FOR_AIM = { [3] = 1, [4] = 2 } -- LV1_AIM -> LV1, LV2_AIM -> LV2
 
@@ -117,7 +125,7 @@ local focus_button_held = false
 -- of these after the strike press was sent, the game has not started the strike yet.
 local FOCUS_STANCE_ACTIONS = { cAimIdle = true, cAimIdleHigh = true, cAimWalk = true, cAimWalkStop = true }
 
-local strike = { frames_left = 0, pending = false, sent = false, start_action = nil }
+local strike = { frames_left = 0, pending = false, sent = false, start_action = nil, key_index = PAD_KEY_FOCUS_STRIKE }
 
 local function current_action_name(hunter)
     local action = hunter:get_BaseActionController():get_CurrentAction()
@@ -133,14 +141,15 @@ end
 -- Calls blocked by "No pull towards the target" during the current strike, logged when it ends.
 local target_pull_blocks = {}
 
-local function start_strike_window(hunter, strike_key)
+local function start_strike_window(hunter, input, key_index)
     strike.frames_left = STRIKE_WINDOW_FRAMES
     strike.pending = true
     strike.sent = false
     strike.start_action = current_action_name(hunter)
-    strike_key:clear()
+    strike.key_index = key_index
+    input:getKey(key_index):clear()
     target_pull_blocks = {}
-    log_line("strike armed during " .. strike.start_action)
+    log_line(string.format("strike armed during %s key %d", strike.start_action, key_index))
 end
 
 local function send_strike_press(strike_key)
@@ -188,6 +197,25 @@ local function log_attack_presses(input)
     end
 end
 
+local function is_rising_spiral_slash_press(hunter, input)
+    return settings.rising_spiral_slash and focus_button_held and hunter:get_WeaponType() == INSECT_GLAIVE
+        and input:getKey(PAD_KEY_ATTACK_01):get_OnTrigger()
+        and current_action_name(hunter) == RISING_SPIRAL_SLASH_FROM
+end
+
+-- The key of a Focus Mode move pressed this frame: a Focus Strike, or the Insect Glaive's Rising
+-- Spiral Slash. Both are passed to the game through the same window that holds Focus Mode on.
+local function focus_move_pressed(hunter, input)
+    local strike_key = input:getKey(PAD_KEY_FOCUS_STRIKE)
+    if strike_key:get_OnTrigger() and (focus_button_held or settings.strike_on_r1_alone) then
+        return PAD_KEY_FOCUS_STRIKE
+    end
+    if is_rising_spiral_slash_press(hunter, input) then
+        return PAD_KEY_ATTACK_01
+    end
+    return nil
+end
+
 -- The command controller merges pad and keyboard input here, before the game reads its commands.
 local merging_controller = nil
 
@@ -201,7 +229,6 @@ end, function(retval)
 
     local input = controller:get_MergedVirtualInput()
     local focus_key = input:getKey(PAD_KEY_FOCUS)
-    local strike_key = input:getKey(PAD_KEY_FOCUS_STRIKE)
     focus_button_held = focus_key:get_On()
     if focus_button_held then
         log_attack_presses(input)
@@ -211,12 +238,14 @@ end, function(retval)
         reset_strike()
         return retval
     end
-    local strike_pressed = strike_key:get_OnTrigger() and (focus_button_held or settings.strike_on_r1_alone)
-    if strike.frames_left == 0 and strike_pressed then
-        start_strike_window(hunter, strike_key)
+    if strike.frames_left == 0 then
+        local key_index = focus_move_pressed(hunter, input)
+        if key_index then
+            start_strike_window(hunter, input, key_index)
+        end
     end
     if strike.frames_left > 0 then
-        hold_focus_for_strike(hunter, focus_key, strike_key)
+        hold_focus_for_strike(hunter, focus_key, input:getKey(strike.key_index))
     else
         focus_key:clear()
     end
@@ -449,6 +478,7 @@ re.on_draw_ui(function()
     setting_checkbox("Show wounds only while L2 is held", "wounds_only_while_focus_held")
     setting_checkbox("Hide the focus reticle (melee, weapon drawn)", "hide_focus_reticle")
     setting_checkbox("No pull towards the target on Focus Strikes (melee)", "no_target_pull")
+    setting_checkbox("L2 + B does the Rising Spiral Slash (Insect Glaive charged attack, three extracts)", "rising_spiral_slash")
     setting_checkbox("R1 alone does the Focus Strike, R1 no longer sheathes (melee, weapon drawn)", "strike_on_r1_alone")
     setting_checkbox("Log focus state (applies after Reset scripts)", "log_state")
     imgui.tree_pop()
