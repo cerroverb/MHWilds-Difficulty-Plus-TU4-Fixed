@@ -7,7 +7,7 @@
 -- Ranged weapons and a sheathed weapon keep the game's behavior.
 -- Switches are in the REFramework menu under "Focus Rules" and are saved to reframework/data/FocusRules.json.
 -- With "Log focus state" on, focus state, the focus button and actions are written to re2_framework_log.txt.
--- Logging is on in test builds and off in releases. Its per-character hook is only installed when it
+-- Logging is off in releases and on in test builds. Its per-character hook is only installed when it
 -- is on at script load.
 --
 -- Method names come from the game's il2cpp_dump.json (REFramework SDK dump).
@@ -24,7 +24,7 @@
 local CONFIG_PATH = "FocusRules.json"
 
 local settings = {
-    log_state = true, -- false in releases
+    log_state = false, -- true in test builds
     focus_strike_only = true,
     no_aim_turning = true,
     wounds_only_while_focus_held = true,
@@ -249,15 +249,23 @@ sdk.hook(hunter_type:get_method("rotateAimTurnLook"), skip_aim_turn_rotation)
 sdk.hook(hunter_type:get_method("rotateAimTurnLook_WpOffset"), skip_aim_turn_rotation)
 
 -- Round 12: the camera zooms in briefly during a strike, while the script holds Focus Mode on.
--- app.cHunterCameraRequest.requestAim is the hunter's request for the Focus Mode camera, so it is
--- skipped while the strike window is open. Outside the window Focus Mode never starts for a drawn
--- melee weapon, so nothing else is affected.
-sdk.hook(sdk.find_type_definition("app.cHunterCameraRequest"):get_method("requestAim"), function()
-    if settings.no_focus_camera and strike.frames_left > 0 then
-        log_line("focus camera request skipped")
-        return sdk.PreHookResult.SKIP_ORIGINAL
-    end
-end)
+-- Round 13 showed app.cHunterCameraRequest.requestAim is not called then. The zoom is most likely the aim
+-- field of view, read through these two getters, so while the strike window is open they return
+-- the normal field of view instead. sdk.float_to_ptr is REFramework's float return value.
+local function hook_aim_fov(type_name, aim_fov_method, base_fov_method)
+    local param = nil
+    sdk.hook(sdk.find_type_definition(type_name):get_method(aim_fov_method), function(args)
+        param = sdk.to_managed_object(args[2])
+    end, function(retval)
+        local owner = param
+        param = nil
+        if not settings.no_focus_camera or strike.frames_left == 0 or not owner then return retval end
+        return sdk.float_to_ptr(owner:call(base_fov_method))
+    end)
+end
+
+hook_aim_fov("app.cCameraOperateOptionBuildParam", "get_AimFov", "get_BaseFov")
+hook_aim_fov("app.cCameraExFieldParam", "get_AimFOV", "get_BaseFOV")
 
 -- Reticle panels shown while the script holds Focus Mode on for a strike. Round 9 hid UI020002 alone
 -- and the crosshair still flashed. kmy0's HudController maps the focus reticle (UI020002) onto the
