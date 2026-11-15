@@ -244,39 +244,33 @@ end
 sdk.hook(hunter_type:get_method("rotateAimTurnLook"), skip_aim_turn_rotation)
 sdk.hook(hunter_type:get_method("rotateAimTurnLook_WpOffset"), skip_aim_turn_rotation)
 
--- app.GUI020002 draws the Focus Mode and slinger reticle, and shows it while the script holds Focus Mode
--- on for a strike. Round 7 showed that setting it invisible once per frame from re.on_frame does not
--- stick, so it is applied right after the GUI's own updates. It is shown again only once, so the
--- game's own visibility is left alone.
-local focus_reticle_gui = nil
+-- app.GUI020002 (GUIID UI020002) draws the Focus Mode and slinger reticle, and shows it while the script
+-- holds Focus Mode on for a strike. Like kmy0's HudController, the change is written after
+-- app.GUIManager.lateUpdateApp(), once the game has finished its own HUD updates for the frame.
+-- It is shown again only once, so the game's own visibility is left alone. Round 8 hooked GUI020002's
+-- update methods instead and flooded the log with Lua errors.
+local GUI_ID_FOCUS_RETICLE = 50
 local focus_reticle_hidden = false
 
-local function apply_focus_reticle_visibility(gui)
-    if not hide_focus_reticle_now and not focus_reticle_hidden then return end
-    local display_control = sdk.get_managed_singleton("app.GUIManager"):get_HudDisplayManager()
-        :findDisplayControl(gui:get_ID())
-    display_control._TargetControl:set_ForceInvisible(hide_focus_reticle_now)
+local function get_focus_reticle_control()
+    local gui_manager = sdk.get_managed_singleton("app.GUIManager")
+    if not gui_manager then return nil end
+    -- No display control exists until the HUD is loaded (title screen, loading).
+    local display_control = gui_manager:get_HudDisplayManager():findDisplayControl(GUI_ID_FOCUS_RETICLE)
+    return display_control and display_control._TargetControl
+end
+
+sdk.hook(sdk.find_type_definition("app.GUIManager"):get_method("lateUpdateApp"), nil, function(retval)
+    if not hide_focus_reticle_now and not focus_reticle_hidden then return retval end
+    local control = get_focus_reticle_control()
+    if not control then return retval end
+    control:set_ForceInvisible(hide_focus_reticle_now)
     if focus_reticle_hidden ~= hide_focus_reticle_now then
         log_line("focus reticle hidden=" .. tostring(hide_focus_reticle_now))
     end
     focus_reticle_hidden = hide_focus_reticle_now
-end
-
-local function hook_focus_reticle_update(method_name)
-    sdk.hook(sdk.find_type_definition("app.GUI020002"):get_method(method_name), function(args)
-        focus_reticle_gui = sdk.to_managed_object(args[2])
-    end, function(retval)
-        local gui = focus_reticle_gui
-        focus_reticle_gui = nil
-        if gui then
-            apply_focus_reticle_visibility(gui)
-        end
-        return retval
-    end)
-end
-
-hook_focus_reticle_update("guiHudUpdate")
-hook_focus_reticle_update("guiHudVisibleUpdate")
+    return retval
+end)
 
 local highlight_effect = nil
 
