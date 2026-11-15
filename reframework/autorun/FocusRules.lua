@@ -1,6 +1,6 @@
--- Focus Mode rules prototype, round 4.
--- With a melee weapon drawn, the focus button on its own no longer enters Focus Mode.
--- Focus button + Focus Strike button still performs a Focus Strike, turned only the way a normal
+-- Focus Mode rules prototype, round 5.
+-- With a melee weapon drawn, the focus button no longer enters Focus Mode, and R1 on its own performs
+-- a Focus Strike instead of sheathing (sprinting still sheathes). The strike turns only the way a normal
 -- attack turns, never towards the camera. Monster wounds are highlighted while the focus button is held.
 -- Ranged weapons and a sheathed weapon keep the game's behavior.
 -- Switches are in the REFramework menu under "Focus Rules" and are saved to reframework/data/FocusRules.json.
@@ -34,8 +34,8 @@ local PAD_KEY_FOCUS = 18 -- AIM
 -- app.HunterDef.ACTION_START_TURN_TYPE: the _AIM variants turn towards the camera.
 local START_TURN_FOR_AIM = { [3] = 1, [4] = 2 } -- LV1_AIM -> LV1, LV2_AIM -> LV2
 
--- Frames the focus button is held on for the game after a Focus Strike press, so Focus Mode can
--- start, and frames it stays on after the strike press is passed to the game.
+-- Frames the focus button is held on for the game after an R1 press, so Focus Mode can start and
+-- the game reads the press as a Focus Strike, and frames it stays on after the press is passed on.
 local STRIKE_WINDOW_FRAMES = 30
 local FRAMES_AFTER_STRIKE = 10
 
@@ -99,31 +99,58 @@ end
 -- Focus button state as the player pressed it, read before this script changes it.
 local focus_button_held = false
 
-local strike = { frames_left = 0, pending = false }
+-- Focus Mode stance actions every weapon has (round 1 to 5 logs). While the hunter is still in one
+-- of these after the strike press was sent, the game has not started the strike yet.
+local FOCUS_STANCE_ACTIONS = { cAimIdle = true, cAimIdleHigh = true, cAimWalk = true, cAimWalkStop = true }
+
+local strike = { frames_left = 0, pending = false, sent = false, start_action = nil }
+
+local function current_action_name(hunter)
+    local action = hunter:get_BaseActionController():get_CurrentAction()
+    return action and action:get_type_definition():get_name() or "none"
+end
 
 local function reset_strike()
     strike.frames_left = 0
     strike.pending = false
+    strike.sent = false
 end
 
-local function start_strike_window(strike_key)
+local function start_strike_window(hunter, strike_key)
     strike.frames_left = STRIKE_WINDOW_FRAMES
     strike.pending = true
+    strike.sent = false
+    strike.start_action = current_action_name(hunter)
     strike_key:clear()
-    log_line("strike armed")
+    log_line("strike armed during " .. strike.start_action)
 end
 
+local function send_strike_press(strike_key)
+    strike_key:set_On(true)
+    strike_key:set_OnTrigger(true)
+    if not strike.sent then
+        log_line("strike passed to game")
+    end
+    strike.sent = true
+end
+
+-- Keeps Focus Mode on for the game and sends the press once Focus Mode is active. The press is sent
+-- again each frame until the hunter leaves the action it was in and the Focus Mode stance actions.
 local function hold_focus_for_strike(hunter, focus_key, strike_key)
     strike.frames_left = strike.frames_left - 1
     focus_key:set_On(true)
-    if strike.pending and hunter:get_HunterContext():get_IsAim() then
-        strike_key:set_On(true)
-        strike_key:set_OnTrigger(true)
+    if not strike.pending then return end
+
+    local action = current_action_name(hunter)
+    if strike.sent and action ~= strike.start_action and not FOCUS_STANCE_ACTIONS[action] then
         strike.pending = false
         strike.frames_left = math.min(strike.frames_left, FRAMES_AFTER_STRIKE)
-        log_line("strike passed to game")
-    elseif strike.frames_left == 0 and strike.pending then
-        log_line("strike window ended before Focus Mode started")
+        log_line("strike ended in " .. action)
+    elseif hunter:get_HunterContext():get_IsAim() then
+        send_strike_press(strike_key)
+    end
+    if strike.frames_left == 0 and strike.pending then
+        log_line("strike window ended in " .. action)
     end
 end
 
@@ -162,8 +189,8 @@ end, function(retval)
         reset_strike()
         return retval
     end
-    if strike.frames_left == 0 and focus_button_held and strike_key:get_OnTrigger() then
-        start_strike_window(strike_key)
+    if strike.frames_left == 0 and strike_key:get_OnTrigger() then
+        start_strike_window(hunter, strike_key)
     end
     if strike.frames_left > 0 then
         hold_focus_for_strike(hunter, focus_key, strike_key)
@@ -272,7 +299,7 @@ end
 
 re.on_draw_ui(function()
     if not imgui.tree_node("Focus Rules") then return end
-    setting_checkbox("L2 alone does nothing, L2 + R1 does a Focus Strike (melee, weapon drawn)", "focus_strike_only")
+    setting_checkbox("No Focus Mode, R1 does a Focus Strike (melee, weapon drawn)", "focus_strike_only")
     setting_checkbox("No turning towards the camera (melee)", "no_aim_turning")
     setting_checkbox("Show wounds only while L2 is held", "wounds_only_while_focus_held")
     setting_checkbox("Log focus state (applies after Reset scripts)", "log_state")
