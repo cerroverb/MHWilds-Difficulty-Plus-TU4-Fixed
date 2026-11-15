@@ -29,7 +29,6 @@ local settings = {
     no_aim_turning = true,
     wounds_only_while_focus_held = true,
     hide_focus_reticle = true,
-    no_focus_camera = true,
     strike_on_r1_alone = false,
 }
 
@@ -82,7 +81,6 @@ end
 -- and only the address is kept, so no hook calls into an object from an earlier frame.
 local master_hunter_address = nil
 local hide_focus_reticle_now = false
-local melee_rules_active = false
 
 re.on_frame(function()
     local master = get_master_hunter()
@@ -92,8 +90,7 @@ re.on_frame(function()
     end
     master_hunter_address = address
     local melee_drawn = master ~= nil and is_melee(master) and master:get_IsWeaponOn()
-    melee_rules_active = settings.focus_strike_only and melee_drawn
-    hide_focus_reticle_now = settings.hide_focus_reticle and melee_rules_active
+    hide_focus_reticle_now = settings.hide_focus_reticle and settings.focus_strike_only and melee_drawn
 end)
 
 local function is_master_hunter(hunter)
@@ -253,27 +250,6 @@ end
 
 sdk.hook(hunter_type:get_method("rotateAimTurnLook"), skip_aim_turn_rotation)
 sdk.hook(hunter_type:get_method("rotateAimTurnLook_WpOffset"), skip_aim_turn_rotation)
-
--- Round 12: the camera zooms in briefly during a strike, while the script holds Focus Mode on.
--- Round 13 showed app.cHunterCameraRequest.requestAim is not called then. The zoom is most likely the aim
--- field of view, read through these two getters. Round 14 returned the normal field of view only while
--- the strike window was open, and the camera jolted when the value switched mid-strike. They now return
--- the normal field of view the whole time a melee weapon is drawn, when Focus Mode can only start for
--- a strike anyway. sdk.float_to_ptr is REFramework's float return value.
-local function hook_aim_fov(type_name, aim_fov_method, base_fov_method)
-    local param = nil
-    sdk.hook(sdk.find_type_definition(type_name):get_method(aim_fov_method), function(args)
-        param = sdk.to_managed_object(args[2])
-    end, function(retval)
-        local owner = param
-        param = nil
-        if not settings.no_focus_camera or not melee_rules_active or not owner then return retval end
-        return sdk.float_to_ptr(owner:call(base_fov_method))
-    end)
-end
-
-hook_aim_fov("app.cCameraOperateOptionBuildParam", "get_AimFov", "get_BaseFov")
-hook_aim_fov("app.cCameraExFieldParam", "get_AimFOV", "get_BaseFOV")
 
 -- Reticle panels shown while the script holds Focus Mode on for a strike. Round 9 hid UI020002 alone
 -- and the crosshair still flashed. kmy0's HudController maps the focus reticle (UI020002) onto the
@@ -442,7 +418,6 @@ re.on_draw_ui(function()
     setting_checkbox("No turning towards the camera (melee)", "no_aim_turning")
     setting_checkbox("Show wounds only while L2 is held", "wounds_only_while_focus_held")
     setting_checkbox("Hide the focus reticle (melee, weapon drawn)", "hide_focus_reticle")
-    setting_checkbox("No Focus Mode camera zoom during Focus Strikes", "no_focus_camera")
     setting_checkbox("R1 alone does the Focus Strike, R1 no longer sheathes (melee, weapon drawn)", "strike_on_r1_alone")
     setting_checkbox("Log focus state (applies after Reset scripts)", "log_state")
     imgui.tree_pop()
