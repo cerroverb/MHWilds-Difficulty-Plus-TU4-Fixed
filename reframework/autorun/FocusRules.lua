@@ -244,31 +244,64 @@ end
 sdk.hook(hunter_type:get_method("rotateAimTurnLook"), skip_aim_turn_rotation)
 sdk.hook(hunter_type:get_method("rotateAimTurnLook_WpOffset"), skip_aim_turn_rotation)
 
--- app.GUI020002 (GUIID UI020002) draws the Focus Mode and slinger reticle, and shows it while the script
--- holds Focus Mode on for a strike. Like kmy0's HudController, the change is written after
--- app.GUIManager.lateUpdateApp(), once the game has finished its own HUD updates for the frame.
--- It is shown again only once, so the game's own visibility is left alone. Round 8 hooked GUI020002's
--- update methods instead and flooded the log with Lua errors.
-local GUI_ID_FOCUS_RETICLE = 50
+-- Reticle panels shown while the script holds Focus Mode on for a strike. Round 9 hid UI020002 alone
+-- and the crosshair still flashed. kmy0's HudController maps the focus reticle (UI020002) onto the
+-- general reticle HUD (UI020000) in data/ace.lua (hudless_to_hud), so both are hidden.
+-- GUIID values are from app.GUIID.ID in the SDK dump.
+local FOCUS_RETICLE_GUI_IDS = { 46, 50 } -- UI020000, UI020002
 local focus_reticle_hidden = false
 
-local function get_focus_reticle_control()
+local function get_hud_display_manager()
     local gui_manager = sdk.get_managed_singleton("app.GUIManager")
-    if not gui_manager then return nil end
-    -- No display control exists until the HUD is loaded (title screen, loading).
-    local display_control = gui_manager:get_HudDisplayManager():findDisplayControl(GUI_ID_FOCUS_RETICLE)
-    return display_control and display_control._TargetControl
+    return gui_manager and gui_manager:get_HudDisplayManager()
 end
 
-sdk.hook(sdk.find_type_definition("app.GUIManager"):get_method("lateUpdateApp"), nil, function(retval)
-    if not hide_focus_reticle_now and not focus_reticle_hidden then return retval end
-    local control = get_focus_reticle_control()
-    if not control then return retval end
-    control:set_ForceInvisible(hide_focus_reticle_now)
+-- Like kmy0's HudController, the change is written after app.GUIManager.lateUpdateApp(), once the
+-- game has finished its own HUD updates for the frame. Panels are shown again only once, so the
+-- game's own visibility is left alone. Round 8 hooked GUI020002's update methods instead and flooded
+-- the log with Lua errors.
+local function apply_focus_reticle_visibility(display_manager)
+    if not hide_focus_reticle_now and not focus_reticle_hidden then return end
+    for _, gui_id in ipairs(FOCUS_RETICLE_GUI_IDS) do
+        -- No display control exists until the HUD is loaded (title screen, loading).
+        local display_control = display_manager:findDisplayControl(gui_id)
+        if display_control and display_control._TargetControl then
+            display_control._TargetControl:set_ForceInvisible(hide_focus_reticle_now)
+        end
+    end
     if focus_reticle_hidden ~= hide_focus_reticle_now then
         log_line("focus reticle hidden=" .. tostring(hide_focus_reticle_now))
     end
     focus_reticle_hidden = hide_focus_reticle_now
+end
+
+-- Test builds only: logs every HUD panel that turns visible or invisible while a melee weapon is
+-- drawn, to find the panel that draws the crosshair during strikes.
+local hud_panel_visible = {}
+
+local function log_hud_panel_changes(display_manager)
+    local display_controls = display_manager._DisplayControls
+    for i = 0, display_controls:get_Count() - 1 do
+        local display_control = display_controls:get_Item(i)
+        local control = display_control._TargetControl
+        if control then
+            local name = display_control._Owner:get_type_definition():get_name()
+            local visible = display_control:isHudVisible() and control:get_ActualVisible()
+            if hud_panel_visible[name] ~= nil and hud_panel_visible[name] ~= visible then
+                log_line(string.format("hud %s visible=%s", name, tostring(visible)))
+            end
+            hud_panel_visible[name] = visible
+        end
+    end
+end
+
+sdk.hook(sdk.find_type_definition("app.GUIManager"):get_method("lateUpdateApp"), nil, function(retval)
+    local display_manager = get_hud_display_manager()
+    if not display_manager then return retval end
+    apply_focus_reticle_visibility(display_manager)
+    if settings.log_state and hide_focus_reticle_now then
+        log_hud_panel_changes(display_manager)
+    end
     return retval
 end)
 
