@@ -213,6 +213,11 @@ local function hold_focus_for_strike(hunter, focus_key, strike_key)
     elseif hunter:get_HunterContext():get_IsAim() and not STANDING_DRAW_ACTIONS[action] then
         send_strike_press(strike_key)
     end
+    if strike.pending then
+        log_line(string.format("strike wait %s is_aim=%s focus=%s press=%s/%s frames_left=%d", action,
+            tostring(hunter:get_HunterContext():get_IsAim()), tostring(focus_key:get_On()),
+            tostring(strike_key:get_On()), tostring(strike_key:get_OnTrigger()), strike.frames_left))
+    end
     if strike.frames_left == 0 and strike.pending then
         log_line("strike window ended in " .. action)
     end
