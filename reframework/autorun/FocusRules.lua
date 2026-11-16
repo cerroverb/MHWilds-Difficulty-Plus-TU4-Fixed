@@ -22,6 +22,9 @@
 -- app.cEnemyLoopEffectHighlight._IsAim from a hook on isActivate(), and hiding the reticle follows its
 -- slinger_reticle element (findDisplayControl, _TargetControl, set_ForceInvisible):
 -- https://github.com/kmy0/HudController
+-- The game's Focus Strike command (app.PlayerCommand.TYPE AIM_SP_B), app.PlayerUtil.checkCommandResult and
+-- answering it from a skipped call through thread hook storage follow lingsamuel's Smart Focus Attack
+-- (Nexus Mods 75) and its _CatLib fsm.lua (AbortFSM).
 
 local CONFIG_PATH = "FocusRules.json"
 
@@ -187,6 +190,30 @@ local GAME_COMMAND_FOR_KEY = { [PAD_KEY_FOCUS_STRIKE] = 63 }
 -- The game's command for R1 alone (ATTACK_SP_B), which sheathes the weapon.
 local GAME_COMMAND_R1_ALONE = 34
 
+-- After a too-early press is let go, the game still has it as R1 alone and sheathes the weapon when
+-- the action ends. Until the hunter leaves that action, the game's check for R1 alone is answered
+-- "not pressed".
+local r1_alone_blocked_during = nil
+
+sdk.hook(sdk.find_type_definition("app.PlayerUtil"):get_method("checkCommandResult"), function(args)
+    local command_type = sdk.to_int64(args[4]) & 0xFFFFFFFF
+    if not r1_alone_blocked_during or command_type ~= GAME_COMMAND_R1_ALONE then return end
+    local hunter = sdk.to_managed_object(args[2]):get_Character()
+    if not is_master_hunter(hunter) then return end
+    if current_action_name(hunter) ~= r1_alone_blocked_during then
+        r1_alone_blocked_during = nil
+        return
+    end
+    log_line("R1 alone blocked during " .. r1_alone_blocked_during)
+    thread.get_hook_storage()["block"] = true
+    return sdk.PreHookResult.SKIP_ORIGINAL
+end, function(retval)
+    local storage = thread.get_hook_storage()
+    if not storage["block"] then return retval end
+    storage["block"] = nil
+    return sdk.to_ptr(0)
+end)
+
 -- How the game buffers a press, seen in its app.cPlayerCommandInput state: a press made in the
 -- pre-cancel part of an action is kept and starts the strike as soon as the action can be
 -- cancelled (SuccessCancel). A press made earlier only counts as an ordinary press (SuccessNormal),
@@ -217,13 +244,12 @@ local function hold_focus_for_strike(hunter, focus_key, strike_key, controller)
         log_line(string.format("strike ended in %s facing %.0f", action, facing_degrees(hunter)))
     elseif strike.sent and game_dropped_press(controller) then
         -- Too early. Like the game, drop the strike, and let go of Focus Mode so the hunter does not
-        -- end up in the Focus Mode stance. The game also kept the press as R1 alone, which would
-        -- sheathe the weapon once Focus Mode is let go, so that command is reset too.
+        -- end up in the Focus Mode stance.
         log_line("strike press too early during " .. action .. ", Focus Mode let go")
         reset_strike()
         focus_key:clear()
         strike_key:clear()
-        controller:resetCommand(GAME_COMMAND_R1_ALONE)
+        r1_alone_blocked_during = action
         return
     elseif hunter:get_HunterContext():get_IsAim() then
         send_strike_press(strike_key)
