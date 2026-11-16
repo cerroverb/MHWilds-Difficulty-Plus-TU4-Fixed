@@ -135,7 +135,7 @@ end
 
 -- action: the action the strike turned into, kept until the hunter leaves it.
 local strike = { frames_left = 0, pending = false, sent = false, start_action = nil, key_index = PAD_KEY_FOCUS_STRIKE,
-    action = nil, key_down_last_frame = false }
+    action = nil }
 
 local function current_action_name(hunter)
     local action = hunter:get_BaseActionController():get_CurrentAction()
@@ -163,7 +163,6 @@ local function start_strike_window(hunter, input, key_index)
     strike.sent = false
     strike.start_action = current_action_name(hunter)
     strike.key_index = key_index
-    strike.key_down_last_frame = false
     input:getKey(key_index):clear()
     strike.action = nil
     strike_blocks = {}
@@ -171,18 +170,9 @@ local function start_strike_window(hunter, input, key_index)
         facing_degrees(hunter)))
 end
 
--- The game reacts to the frame a key goes down and keeps that press only for a short time. A press
--- held through a dodge or an attack is therefore forgotten before the action can be cancelled, and
--- the hunter ends up in the Focus Mode stance. So the press is repeated, key down on one frame and up
--- on the next, until the strike starts.
 local function send_strike_press(strike_key)
-    if strike.key_down_last_frame then
-        strike_key:clear()
-    else
-        strike_key:set_On(true)
-        strike_key:set_OnTrigger(true)
-    end
-    strike.key_down_last_frame = not strike.key_down_last_frame
+    strike_key:set_On(true)
+    strike_key:set_OnTrigger(true)
     if not strike.sent then
         log_line("strike passed to game")
     end
