@@ -144,6 +144,12 @@ end
 -- Calls blocked during the current strike, by method name, logged when the strike action ends.
 local strike_blocks = {}
 
+-- Direction the hunter faces, in degrees around the vertical axis, for the log.
+local function facing_degrees(hunter)
+    local forward = hunter:get_GameObject():get_Transform():get_AxisZ()
+    return math.deg(math.atan(forward.x, forward.z))
+end
+
 local function start_strike_window(hunter, input, key_index)
     strike.frames_left = STRIKE_WINDOW_FRAMES
     strike.pending = true
@@ -153,7 +159,8 @@ local function start_strike_window(hunter, input, key_index)
     input:getKey(key_index):clear()
     strike.action = nil
     strike_blocks = {}
-    log_line(string.format("strike armed during %s key %d", strike.start_action, key_index))
+    log_line(string.format("strike armed during %s key %d facing %.0f", strike.start_action, key_index,
+        facing_degrees(hunter)))
 end
 
 local function send_strike_press(strike_key)
@@ -177,7 +184,7 @@ local function hold_focus_for_strike(hunter, focus_key, strike_key)
         strike.pending = false
         strike.frames_left = math.min(strike.frames_left, FRAMES_AFTER_STRIKE)
         strike.action = action
-        log_line("strike ended in " .. action)
+        log_line(string.format("strike ended in %s facing %.0f", action, facing_degrees(hunter)))
     elseif hunter:get_HunterContext():get_IsAim() then
         send_strike_press(strike_key)
     end
@@ -223,7 +230,8 @@ local function track_strike_action(hunter)
     for name, count in pairs(strike_blocks) do
         table.insert(blocked, name .. "=" .. count)
     end
-    log_line("strike action " .. strike.action .. " done, blocked " .. table.concat(blocked, " "))
+    log_line(string.format("strike action %s done facing %.0f, blocked %s", strike.action, facing_degrees(hunter),
+        table.concat(blocked, " ")))
     strike.action = nil
 end
 
@@ -324,9 +332,11 @@ sdk.hook(sdk.find_type_definition("app.PlayerCommonActionComponent.acAimTargetHo
     end)
 
 -- On the Sword and Shield, Hammer, Hunting Horn, Lance and Gunlance the Focus Strike action turns the
--- hunter to the camera itself instead of through rotateAimTurnLook. On the Sword and Shield the game
--- calls onGunnerAimAdjust every frame of the strike (round 18 log) and none of the other turn requests.
--- While a strike is starting or playing, these calls are skipped, and every call is counted for the log.
+-- hunter to the camera itself instead of through rotateAimTurnLook. Skipping the hunter's own turn
+-- requests and onGunnerAimAdjust did not stop it on the Sword and Shield (round 18), so the turn
+-- requests the strike action makes itself (cHunterActionBase.turnDirection and startAngleYRotToTarget,
+-- which take a direction) are skipped too while a strike is starting or playing. Every call is
+-- counted for the log, and the hunter's facing is logged when the strike is armed and when it ends.
 -- app.WeaponDef.TYPE SHORT_SWORD, HAMMER, WHISTLE, LANCE, GUN_LANCE
 local STRIKE_TURNS_TO_CAMERA = { [1] = true, [4] = true, [5] = true, [6] = true, [7] = true }
 
@@ -342,7 +352,7 @@ local function count_strike_call(name)
     strike_blocks[name] = (strike_blocks[name] or 0) + 1
 end
 
-for _, method_name in ipairs({ "onGunnerAimAdjust", "turnDirection_MotionSequence", "requestInertialTurn",
+for _, method_name in ipairs({ "turnDirection_MotionSequence", "requestInertialTurn",
     "setAngleYRotatorDampingTarget" }) do
     sdk.hook(hunter_type:get_method(method_name), function(args)
         if not settings.no_strike_turn_to_camera or not is_camera_turning_strike(hunter_from_args(args)) then return end
@@ -352,10 +362,29 @@ for _, method_name in ipairs({ "onGunnerAimAdjust", "turnDirection_MotionSequenc
 end
 
 -- Logged only, to see whether they take part in the turn.
-for _, method_name in ipairs({ "startAngleYRotator", "beginGunnerAimAdjustInterpolate" }) do
+for _, method_name in ipairs({ "startAngleYRotator", "onGunnerAimAdjust", "beginGunnerAimAdjustInterpolate" }) do
     sdk.hook(hunter_type:get_method(method_name), function(args)
         if settings.log_state and is_master_melee_striking(hunter_from_args(args)) then
             count_strike_call(method_name .. "(seen)")
+        end
+    end)
+end
+
+local hunter_action_type = sdk.find_type_definition("app.cHunterActionBase")
+
+for _, method_name in ipairs({ "turnDirection", "startAngleYRotToTarget" }) do
+    sdk.hook(hunter_action_type:get_method(method_name), function(args)
+        local hunter = sdk.to_managed_object(args[2]):get_Chara()
+        if not settings.no_strike_turn_to_camera or not is_camera_turning_strike(hunter) then return end
+        count_strike_call("action." .. method_name)
+        return sdk.PreHookResult.SKIP_ORIGINAL
+    end)
+end
+
+for _, method_name in ipairs({ "turnDirectionInputDir", "calcSightDir" }) do
+    sdk.hook(hunter_action_type:get_method(method_name), function(args)
+        if settings.log_state and is_master_melee_striking(sdk.to_managed_object(args[2]):get_Chara()) then
+            count_strike_call("action." .. method_name .. "(seen)")
         end
     end)
 end
