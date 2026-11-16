@@ -54,10 +54,6 @@ local START_TURN_FOR_AIM = { [3] = 1, [4] = 2 } -- LV1_AIM -> LV1, LV2_AIM -> LV
 -- start, and frames it stays on after the strike press is passed to the game.
 local STRIKE_WINDOW_FRAMES = 30
 local FRAMES_AFTER_STRIKE = 10
--- The window only starts to run out once the hunter leaves the action the press was made in, such as
--- drawing the weapon or a dodge, so the strike still comes out on the first frame the game allows it.
--- This limit keeps an action that never ends from holding Focus Mode on.
-local MAX_WAIT_FRAMES = 120
 
 local function load_settings()
     local saved = json.load_file(CONFIG_PATH)
@@ -163,7 +159,6 @@ end
 
 local function start_strike_window(hunter, input, key_index)
     strike.frames_left = STRIKE_WINDOW_FRAMES
-    strike.wait_frames_left = MAX_WAIT_FRAMES
     strike.pending = true
     strike.sent = false
     strike.start_action = current_action_name(hunter)
@@ -187,36 +182,19 @@ end
 -- Keeps Focus Mode on for the game and sends the press once Focus Mode is active. The press is sent
 -- again each frame until the hunter leaves the action it was in for one that is not standing,
 -- moving or a Focus Mode stance.
--- Drawing the weapon while standing. A strike press sent during it is taken by the game's input
--- buffer but no strike comes out after the draw, and the hunter stays in the Focus Mode stance. So
--- the press is only sent once the draw has ended.
-local STANDING_DRAW_ACTIONS = { cWpOn = true, cWpSpOn = true }
-
-local function is_waiting_for_press_action_to_end(action)
-    return strike.pending and action == strike.start_action and strike.wait_frames_left > 0
-end
-
 local function hold_focus_for_strike(hunter, focus_key, strike_key)
-    local action = current_action_name(hunter)
-    strike.wait_frames_left = strike.wait_frames_left - 1
-    if not is_waiting_for_press_action_to_end(action) then
-        strike.frames_left = strike.frames_left - 1
-    end
+    strike.frames_left = strike.frames_left - 1
     focus_key:set_On(true)
     if not strike.pending then return end
 
+    local action = current_action_name(hunter)
     if strike.sent and action ~= strike.start_action and not is_strike_not_started(action) then
         strike.pending = false
         strike.frames_left = math.min(strike.frames_left, FRAMES_AFTER_STRIKE)
         strike.action = action
         log_line(string.format("strike ended in %s facing %.0f", action, facing_degrees(hunter)))
-    elseif hunter:get_HunterContext():get_IsAim() and not STANDING_DRAW_ACTIONS[action] then
+    elseif hunter:get_HunterContext():get_IsAim() then
         send_strike_press(strike_key)
-    end
-    if strike.pending then
-        log_line(string.format("strike wait %s is_aim=%s focus=%s press=%s/%s frames_left=%d", action,
-            tostring(hunter:get_HunterContext():get_IsAim()), tostring(focus_key:get_On()),
-            tostring(strike_key:get_On()), tostring(strike_key:get_OnTrigger()), strike.frames_left))
     end
     if strike.frames_left == 0 and strike.pending then
         log_line("strike window ended in " .. action)
@@ -243,6 +221,11 @@ end
 
 -- The key of a Focus Mode move pressed this frame: a Focus Strike, or the Insect Glaive's Rising
 -- Spiral Slash. Both are passed to the game through the same window that holds Focus Mode on.
+-- Drawing the weapon while standing. In the unmodded game a Focus Strike pressed during it does not
+-- come out, and the hunter is left in the Focus Mode stance. Here the press is dropped, so the
+-- strike does not come out either, and Focus Mode is not turned on.
+local STANDING_DRAW_ACTIONS = { cWpOn = true, cWpSpOn = true }
+
 local function focus_move_pressed(hunter, input)
     local strike_key = input:getKey(PAD_KEY_FOCUS_STRIKE)
     if strike_key:get_OnTrigger() and (focus_button_held or settings.strike_on_r1_alone) then
@@ -290,7 +273,10 @@ end, function(retval)
     end
     if strike.frames_left == 0 then
         local key_index = focus_move_pressed(hunter, input)
-        if key_index then
+        if key_index and STANDING_DRAW_ACTIONS[current_action_name(hunter)] then
+            input:getKey(key_index):clear()
+            log_line("strike press dropped during the draw")
+        elseif key_index then
             start_strike_window(hunter, input, key_index)
         end
     end
