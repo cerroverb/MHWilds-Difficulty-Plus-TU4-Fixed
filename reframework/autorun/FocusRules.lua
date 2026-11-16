@@ -54,6 +54,10 @@ local START_TURN_FOR_AIM = { [3] = 1, [4] = 2 } -- LV1_AIM -> LV1, LV2_AIM -> LV
 -- start, and frames it stays on after the strike press is passed to the game.
 local STRIKE_WINDOW_FRAMES = 30
 local FRAMES_AFTER_STRIKE = 10
+-- A press during a long attack can only start the strike once the attack can be cancelled, which can
+-- be later than STRIKE_WINDOW_FRAMES. So the window only starts to run out once the hunter leaves the
+-- action the press was made in. This limit keeps an action that never ends from holding Focus Mode on.
+local MAX_WAIT_FRAMES = 120
 
 local function load_settings()
     local saved = json.load_file(CONFIG_PATH)
@@ -159,6 +163,7 @@ end
 
 local function start_strike_window(hunter, input, key_index)
     strike.frames_left = STRIKE_WINDOW_FRAMES
+    strike.wait_frames_left = MAX_WAIT_FRAMES
     strike.pending = true
     strike.sent = false
     strike.start_action = current_action_name(hunter)
@@ -202,12 +207,19 @@ local function game_used_press(controller)
     return false
 end
 
+local function is_waiting_for_press_action_to_end(action)
+    return strike.pending and action == strike.start_action and strike.wait_frames_left > 0
+end
+
 local function hold_focus_for_strike(hunter, focus_key, strike_key, controller)
-    strike.frames_left = strike.frames_left - 1
+    local action = current_action_name(hunter)
+    strike.wait_frames_left = strike.wait_frames_left - 1
+    if not is_waiting_for_press_action_to_end(action) then
+        strike.frames_left = strike.frames_left - 1
+    end
     focus_key:set_On(true)
     if not strike.pending then return end
 
-    local action = current_action_name(hunter)
     if strike.sent and action ~= strike.start_action and not is_strike_not_started(action) then
         strike.pending = false
         strike.frames_left = math.min(strike.frames_left, FRAMES_AFTER_STRIKE)
