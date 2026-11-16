@@ -182,7 +182,27 @@ end
 -- Keeps Focus Mode on for the game and sends the press once Focus Mode is active. The press is sent
 -- again each frame until the hunter leaves the action it was in for one that is not standing,
 -- moving or a Focus Mode stance.
-local function hold_focus_for_strike(hunter, focus_key, strike_key)
+-- The game's command for the Focus Strike (app.PlayerCommand.TYPE AIM_SP_B), by strike key.
+local GAME_COMMAND_FOR_KEY = { [PAD_KEY_FOCUS_STRIKE] = 63 }
+
+-- How the game buffers a press, seen in its app.cPlayerCommandInput state: a press made before the
+-- action can be cancelled succeeds as a normal command after a few frames, and the action ignores
+-- it. The game then counts the held key as used, and the strike never comes out. A press made in the
+-- action's pre-cancel section is kept and starts the strike as soon as the action can be cancelled.
+local function game_used_press(controller)
+    local command_index = GAME_COMMAND_FOR_KEY[strike.key_index]
+    if not command_index then return false end
+    local command_list = controller._CommandHolder:get_CommandList()
+    for i = 0, command_list:get_size() - 1 do
+        local command_input = command_list:get_element(i)
+        if command_input.CommandIndex == command_index then
+            return command_input:get_SuccessNormal() or command_input:get_SuccessCancel()
+        end
+    end
+    return false
+end
+
+local function hold_focus_for_strike(hunter, focus_key, strike_key, controller)
     strike.frames_left = strike.frames_left - 1
     focus_key:set_On(true)
     if not strike.pending then return end
@@ -194,7 +214,13 @@ local function hold_focus_for_strike(hunter, focus_key, strike_key)
         strike.action = action
         log_line(string.format("strike ended in %s facing %.0f", action, facing_degrees(hunter)))
     elseif hunter:get_HunterContext():get_IsAim() then
-        send_strike_press(strike_key)
+        if strike.sent and game_used_press(controller) then
+            -- Let go for one frame, so the next frame is a new press the game can buffer again.
+            strike_key:clear()
+            log_line("strike press used up during " .. action .. ", pressing again")
+        else
+            send_strike_press(strike_key)
+        end
     end
     if strike.frames_left == 0 and strike.pending then
         log_line("strike window ended in " .. action)
@@ -273,7 +299,7 @@ end, function(retval)
         end
     end
     if strike.frames_left > 0 then
-        hold_focus_for_strike(hunter, focus_key, input:getKey(strike.key_index))
+        hold_focus_for_strike(hunter, focus_key, input:getKey(strike.key_index), controller)
     else
         focus_key:clear()
     end
