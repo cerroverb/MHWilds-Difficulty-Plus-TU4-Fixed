@@ -134,8 +134,9 @@ local function is_strike_not_started(action)
 end
 
 -- action: the action the strike turned into, kept until the hunter leaves it.
+-- key_during_draw: the key of a Focus Mode move pressed during a standing draw, held until the draw ends.
 local strike = { frames_left = 0, pending = false, sent = false, start_action = nil, key_index = PAD_KEY_FOCUS_STRIKE,
-    action = nil }
+    action = nil, key_during_draw = nil }
 
 local function current_action_name(hunter)
     local action = hunter:get_BaseActionController():get_CurrentAction()
@@ -146,6 +147,7 @@ local function reset_strike()
     strike.frames_left = 0
     strike.pending = false
     strike.sent = false
+    strike.key_during_draw = nil
 end
 
 -- Calls blocked during the current strike, by method name, logged when the strike action ends.
@@ -221,10 +223,20 @@ end
 
 -- The key of a Focus Mode move pressed this frame: a Focus Strike, or the Insect Glaive's Rising
 -- Spiral Slash. Both are passed to the game through the same window that holds Focus Mode on.
--- Drawing the weapon while standing. In the unmodded game a Focus Strike pressed during it does not
--- come out, and the hunter is left in the Focus Mode stance. Here the press is dropped, so the
--- strike does not come out either, and Focus Mode is not turned on.
+-- Drawing the weapon while standing. If the game sees the strike key during it, it ignores that key
+-- after the draw, and the hunter is left in the Focus Mode stance with no strike. So a press during
+-- the draw is kept back, the key is hidden from the game until the draw ends, and the strike starts
+-- on the first frame after it, the same way as a press made right then.
 local STANDING_DRAW_ACTIONS = { cWpOn = true, cWpSpOn = true }
+
+local function start_strike_after_draw(hunter, input)
+    if STANDING_DRAW_ACTIONS[current_action_name(hunter)] then
+        input:getKey(strike.key_during_draw):clear()
+        return
+    end
+    start_strike_window(hunter, input, strike.key_during_draw)
+    strike.key_during_draw = nil
+end
 
 local function focus_move_pressed(hunter, input)
     local strike_key = input:getKey(PAD_KEY_FOCUS_STRIKE)
@@ -274,10 +286,13 @@ end, function(retval)
     if strike.frames_left == 0 then
         local key_index = focus_move_pressed(hunter, input)
         if key_index and STANDING_DRAW_ACTIONS[current_action_name(hunter)] then
-            input:getKey(key_index):clear()
-            log_line("strike press dropped during the draw")
+            strike.key_during_draw = key_index
+            log_line("strike press kept until the draw ends")
         elseif key_index then
             start_strike_window(hunter, input, key_index)
+        end
+        if strike.key_during_draw then
+            start_strike_after_draw(hunter, input)
         end
     end
     if strike.frames_left > 0 then
