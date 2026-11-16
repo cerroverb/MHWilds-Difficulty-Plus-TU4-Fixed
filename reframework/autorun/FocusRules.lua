@@ -288,10 +288,28 @@ end
 local input_frame = 0
 local focus_strike_asked_frame = -1
 
+-- With logging on: the first frame the game asks for Focus Mode (AIM) or the Focus Strike in each
+-- action, to compare when a strike becomes possible with and without the mod.
+local ASKED_COMMAND_NAMES = { [61] = "Focus Mode", [63] = "Focus Strike" }
+local first_ask_logged = {}
+
+local function log_first_ask(hunter, command_type)
+    local key = current_action_name(hunter) .. ASKED_COMMAND_NAMES[command_type]
+    if first_ask_logged[key] then return end
+    first_ask_logged = { [key] = true }
+    log_line(string.format("game asks for %s during %s", ASKED_COMMAND_NAMES[command_type], current_action_name(hunter)))
+end
+
 sdk.hook(sdk.find_type_definition("app.PlayerUtil"):get_method("checkCommandResult"), function(args)
     local command_type = sdk.to_int64(args[4]) & 0xFFFFFFFF
-    if command_type == FOCUS_STRIKE_COMMAND and is_master_hunter(sdk.to_managed_object(args[2]):get_Character()) then
+    if not ASKED_COMMAND_NAMES[command_type] then return end
+    local hunter = sdk.to_managed_object(args[2]):get_Character()
+    if not is_master_hunter(hunter) then return end
+    if command_type == FOCUS_STRIKE_COMMAND then
         focus_strike_asked_frame = input_frame
+    end
+    if settings.log_state then
+        log_first_ask(hunter, command_type)
     end
 end)
 
