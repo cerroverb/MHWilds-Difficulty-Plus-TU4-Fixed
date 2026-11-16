@@ -26,7 +26,7 @@
 local CONFIG_PATH = "FocusRules.json"
 
 local settings = {
-    log_state = true, -- false in releases
+    log_state = false,
     focus_strike_only = true,
     no_aim_turning = true,
     wounds_only_while_focus_held = true,
@@ -332,11 +332,10 @@ sdk.hook(sdk.find_type_definition("app.PlayerCommonActionComponent.acAimTargetHo
     end)
 
 -- On the Sword and Shield, Hammer, Hunting Horn, Lance and Gunlance the Focus Strike action turns the
--- hunter to the camera itself instead of through rotateAimTurnLook. Skipping the hunter's own turn
--- requests and onGunnerAimAdjust did not stop it on the Sword and Shield (round 18), so the turn
--- requests the strike action makes itself (cHunterActionBase.turnDirection and startAngleYRotToTarget,
--- which take a direction) are skipped too while a strike is starting or playing. Every call is
--- counted for the log, and the hunter's facing is logged when the strike is armed and when it ends.
+-- hunter to the camera itself instead of through rotateAimTurnLook. While a strike is starting or
+-- playing, the direction-taking turn requests of the hunter and of the strike action
+-- (cHunterActionBase.turnDirection and startAngleYRotToTarget) are skipped. With logging on, every
+-- call is counted, and the hunter's facing is logged when the strike is armed, starts and ends.
 -- app.WeaponDef.TYPE SHORT_SWORD, HAMMER, WHISTLE, LANCE, GUN_LANCE
 local STRIKE_TURNS_TO_CAMERA = { [1] = true, [4] = true, [5] = true, [6] = true, [7] = true }
 
