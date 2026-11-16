@@ -184,7 +184,34 @@ end
 -- Keeps Focus Mode on for the game and sends the press once Focus Mode is active. The press is sent
 -- again each frame until the hunter leaves the action it was in for one that is not standing,
 -- moving or a Focus Mode stance.
-local function hold_focus_for_strike(hunter, focus_key, strike_key)
+-- The game's Focus Strike command, app.PlayerCommand.TYPE AIM_SP_B.
+local FOCUS_STRIKE_COMMAND = 63
+-- app.cPlayerCommandInput.INPUT_SECTION: the part of the current action a press was made in.
+local SECTION_NORMAL = 0
+
+-- The game keeps a press made in the pre-cancel or cancel part of an action and starts the strike
+-- as soon as the action can be cancelled. A press made earlier in an attack or dodge, in its normal
+-- part, is used up as an ordinary press and dropped. Standing, moving and the Focus Mode stance take
+-- a press in their normal part. Returns true for a press the game will drop.
+local function game_drops_press(controller, action)
+    if strike.key_index ~= PAD_KEY_FOCUS_STRIKE or is_strike_not_started(action) then return false end
+    local command_list = controller._CommandHolder:get_CommandList()
+    for i = 0, command_list:get_size() - 1 do
+        local command_input = command_list:get_element(i)
+        if command_input.CommandIndex == FOCUS_STRIKE_COMMAND then
+            local input_info = command_input._InputInfo
+            for j = 0, input_info:get_size() - 1 do
+                local info = input_info:get_element(j)
+                if info:get_field("_Pushed") then
+                    return info:get_field("_Section") == SECTION_NORMAL
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function hold_focus_for_strike(hunter, focus_key, strike_key, controller)
     strike.frames_left = strike.frames_left - 1
     focus_key:set_On(true)
     if not strike.pending then return end
@@ -195,6 +222,14 @@ local function hold_focus_for_strike(hunter, focus_key, strike_key)
         strike.frames_left = math.min(strike.frames_left, FRAMES_AFTER_STRIKE)
         strike.action = action
         log_line(string.format("strike ended in %s facing %.0f", action, facing_degrees(hunter)))
+    elseif strike.sent and game_drops_press(controller, action) then
+        -- Too early. Like the game, drop the strike, and let go of Focus Mode right away so the hunter
+        -- does not end up in the Focus Mode stance.
+        log_line("strike press too early during " .. action .. ", ignored")
+        reset_strike()
+        focus_key:clear()
+        strike_key:clear()
+        return
     elseif hunter:get_HunterContext():get_IsAim() then
         send_strike_press(strike_key)
     end
@@ -250,7 +285,6 @@ end
 -- (app.PlayerCommand.TYPE AIM_SP_B) was given, through app.PlayerUtil.checkCommandResult. An action
 -- that cannot, such as drawing the weapon, does not ask, and the game drops a press made then. The
 -- mod does the same: a press while the game is not asking is ignored, and Focus Mode is not turned on.
-local FOCUS_STRIKE_COMMAND = 63
 local input_frame = 0
 local focus_strike_asked_frame = -1
 
@@ -299,7 +333,7 @@ end, function(retval)
         end
     end
     if strike.frames_left > 0 then
-        hold_focus_for_strike(hunter, focus_key, input:getKey(strike.key_index))
+        hold_focus_for_strike(hunter, focus_key, input:getKey(strike.key_index), controller)
     else
         focus_key:clear()
     end
