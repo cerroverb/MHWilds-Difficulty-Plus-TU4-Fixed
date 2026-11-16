@@ -22,9 +22,8 @@
 -- app.cEnemyLoopEffectHighlight._IsAim from a hook on isActivate(), and hiding the reticle follows its
 -- slinger_reticle element (findDisplayControl, _TargetControl, set_ForceInvisible):
 -- https://github.com/kmy0/HudController
--- The game's Focus Strike command (app.PlayerCommand.TYPE AIM_SP_B), app.PlayerUtil.checkCommandResult and
--- answering it from a skipped call through thread hook storage follow lingsamuel's Smart Focus Attack
--- (Nexus Mods 75) and its _CatLib fsm.lua (AbortFSM).
+-- The game's Focus Strike command (app.PlayerCommand.TYPE AIM_SP_B) and app.PlayerUtil.checkCommandResult
+-- come from lingsamuel's Smart Focus Attack (Nexus Mods 75) and its _CatLib fsm.lua.
 
 local CONFIG_PATH = "FocusRules.json"
 
@@ -187,32 +186,6 @@ end
 -- moving or a Focus Mode stance.
 -- The game's command for the Focus Strike (app.PlayerCommand.TYPE AIM_SP_B), by strike key.
 local GAME_COMMAND_FOR_KEY = { [PAD_KEY_FOCUS_STRIKE] = 63 }
--- The game's command for R1 alone (ATTACK_SP_B), which sheathes the weapon.
-local GAME_COMMAND_R1_ALONE = 34
-
--- After a too-early press is let go, the game still has it as R1 alone and sheathes the weapon when
--- the action ends. Until the hunter leaves that action, the game's check for R1 alone is answered
--- "not pressed".
-local r1_alone_blocked_during = nil
-
-sdk.hook(sdk.find_type_definition("app.PlayerUtil"):get_method("checkCommandResult"), function(args)
-    local command_type = sdk.to_int64(args[4]) & 0xFFFFFFFF
-    if not r1_alone_blocked_during or command_type ~= GAME_COMMAND_R1_ALONE then return end
-    local hunter = sdk.to_managed_object(args[2]):get_Character()
-    if not is_master_hunter(hunter) then return end
-    if current_action_name(hunter) ~= r1_alone_blocked_during then
-        r1_alone_blocked_during = nil
-        return
-    end
-    log_line("R1 alone blocked during " .. r1_alone_blocked_during)
-    thread.get_hook_storage()["block"] = true
-    return sdk.PreHookResult.SKIP_ORIGINAL
-end, function(retval)
-    local storage = thread.get_hook_storage()
-    if not storage["block"] then return retval end
-    storage["block"] = nil
-    return sdk.to_ptr(0)
-end)
 
 -- How the game buffers a press, seen in its app.cPlayerCommandInput state: a press made in the
 -- pre-cancel part of an action is kept and starts the strike as soon as the action can be
@@ -249,7 +222,6 @@ local function hold_focus_for_strike(hunter, focus_key, strike_key, controller)
         reset_strike()
         focus_key:clear()
         strike_key:clear()
-        r1_alone_blocked_during = action
         return
     elseif hunter:get_HunterContext():get_IsAim() then
         send_strike_press(strike_key)
@@ -396,6 +368,75 @@ sdk.hook(sdk.find_type_definition("app.PlayerCommonActionComponent.acAimTargetHo
     function(args)
         return block_target_pull(sdk.to_managed_object(args[2]):get_Chara(), "updateTargetPos")
     end)
+
+-- With logging on: the game's own buffer state of the Focus Strike command (app.PlayerCommand.TYPE
+-- AIM_SP_B) and of R1 alone (ATTACK_SP_B), logged after each command update while a strike waits or the
+-- focus button is held, whenever it changes. app.cPlayerCommandInput keeps per input section (NORMAL,
+-- PRE_CANCEL, CANCEL) whether the key was pushed, which is how the game buffers presses.
+local LOGGED_COMMANDS = { [34] = "ATTACK_SP_B", [63] = "AIM_SP_B" }
+local last_command_state = {}
+
+local function describe_command_input(command_input)
+    local sections = {}
+    local input_info = command_input._InputInfo
+    for i = 0, input_info:get_size() - 1 do
+        local info = input_info:get_element(i)
+        table.insert(sections, string.format("%d:%s%s", info:get_field("_Section"),
+            info:get_field("_Pushed") and "pushed" or "-", info:get_field("_IsChangedAction") and ",changed" or ""))
+    end
+    return string.format("keep=%s push_ok=%s ok_cancel=%s ok_normal=%s pre_done=%s in_cancel=%s [%s]",
+        tostring(command_input:get_KeepPushing()), tostring(command_input:get_PushToSuccess()),
+        tostring(command_input:get_SuccessCancel()), tostring(command_input:get_SuccessNormal()),
+        tostring(command_input._PreCancelAlreadySuccess), tostring(command_input._InCancelSectionOnPreCanceled),
+        table.concat(sections, " "))
+end
+
+local updating_controller = nil
+
+sdk.hook(sdk.find_type_definition("app.cPlayerCommandController"):get_method("updateCommand"), function(args)
+    updating_controller = sdk.to_managed_object(args[2])
+end, function(retval)
+    local controller = updating_controller
+    updating_controller = nil
+    if not settings.log_state or not controller then return retval end
+    local hunter = controller:get_Character()
+    if not is_master_hunter(hunter) or not (strike.pending or focus_button_held) then return retval end
+    local command_list = controller._CommandHolder:get_CommandList()
+    for i = 0, command_list:get_size() - 1 do
+        local command_input = command_list:get_element(i)
+        local name = LOGGED_COMMANDS[command_input.CommandIndex]
+        if name then
+            local state = current_action_name(hunter) .. " " .. describe_command_input(command_input)
+            if state ~= last_command_state[name] then
+                log_line("command " .. name .. " " .. state)
+                last_command_state[name] = state
+            end
+        end
+    end
+    return retval
+end)
+
+-- With logging on: every time the game checks the Focus Strike or R1-alone command for the master
+-- hunter while a strike waits or the focus button is held, and what the check returned.
+local checked_command = {}
+
+sdk.hook(sdk.find_type_definition("app.PlayerUtil"):get_method("checkCommandResult"), function(args)
+    checked_command = {}
+    if not settings.log_state then return end
+    local command_type = sdk.to_int64(args[4]) & 0xFFFFFFFF
+    if not LOGGED_COMMANDS[command_type] then return end
+    local hunter = sdk.to_managed_object(args[2]):get_Character()
+    if not is_master_hunter(hunter) or not (strike.pending or focus_button_held) then return end
+    checked_command = { name = LOGGED_COMMANDS[command_type], option = sdk.to_int64(args[3]) & 0xFFFFFFFF,
+        action = current_action_name(hunter) }
+end, function(retval)
+    if checked_command.name then
+        log_line(string.format("check %s option %d in %s = %s", checked_command.name, checked_command.option,
+            checked_command.action, tostring((sdk.to_int64(retval) & 1) == 1)))
+    end
+    checked_command = {}
+    return retval
+end)
 
 -- On the Sword and Shield, Hammer, Hunting Horn, Lance and Gunlance the Focus Strike action turns the
 -- hunter to the camera itself instead of through rotateAimTurnLook. While a strike is starting or
