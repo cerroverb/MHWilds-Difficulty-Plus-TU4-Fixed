@@ -187,6 +187,11 @@ end
 -- Keeps Focus Mode on for the game and sends the press once Focus Mode is active. The press is sent
 -- again each frame until the hunter leaves the action it was in for one that is not standing,
 -- moving or a Focus Mode stance.
+-- Drawing the weapon while standing. A strike press sent during it is taken by the game's input
+-- buffer but no strike comes out after the draw, and the hunter stays in the Focus Mode stance. So
+-- the press is only sent once the draw has ended.
+local STANDING_DRAW_ACTIONS = { cWpOn = true, cWpSpOn = true }
+
 local function is_waiting_for_press_action_to_end(action)
     return strike.pending and action == strike.start_action and strike.wait_frames_left > 0
 end
@@ -205,7 +210,7 @@ local function hold_focus_for_strike(hunter, focus_key, strike_key)
         strike.frames_left = math.min(strike.frames_left, FRAMES_AFTER_STRIKE)
         strike.action = action
         log_line(string.format("strike ended in %s facing %.0f", action, facing_degrees(hunter)))
-    elseif hunter:get_HunterContext():get_IsAim() then
+    elseif hunter:get_HunterContext():get_IsAim() and not STANDING_DRAW_ACTIONS[action] then
         send_strike_press(strike_key)
     end
     if strike.frames_left == 0 and strike.pending then
