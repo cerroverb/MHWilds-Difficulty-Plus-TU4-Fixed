@@ -26,7 +26,7 @@
 local CONFIG_PATH = "FocusRules.json"
 
 local settings = {
-    log_state = false,
+    log_state = true, -- false in releases
     focus_strike_only = true,
     no_aim_turning = true,
     wounds_only_while_focus_held = true,
@@ -122,9 +122,16 @@ end
 -- Focus button state as the player pressed it, read before this script changes it.
 local focus_button_held = false
 
--- Focus Mode stance actions every weapon has. While the hunter is still in one
--- of these after the strike press was sent, the game has not started the strike yet.
-local FOCUS_STANCE_ACTIONS = { cAimIdle = true, cAimIdleHigh = true, cAimWalk = true, cAimWalkStop = true }
+-- While the hunter is in one of these actions after the strike press was sent, the game has not
+-- started the strike yet: standing or moving, or a Focus Mode stance. Besides cAimIdle and cAimWalk
+-- every weapon has, some have their own stances, such as the Switch Axe's cSwordAimWalk and the
+-- Charge Blade's cAxeAimIdle.
+local NOT_STARTED_ACTIONS = { cIdle = true, cIdleTurn = true, cMove = true, cMoveStop = true, cMoveTurn = true }
+
+local function is_strike_not_started(action)
+    return NOT_STARTED_ACTIONS[action] or (action:find("Aim", 1, true) ~= nil
+        and (action:find("Idle", 1, true) ~= nil or action:find("Walk", 1, true) ~= nil))
+end
 
 -- action: the action the strike turned into, kept until the hunter leaves it.
 local strike = { frames_left = 0, pending = false, sent = false, start_action = nil, key_index = PAD_KEY_FOCUS_STRIKE,
@@ -173,14 +180,15 @@ local function send_strike_press(strike_key)
 end
 
 -- Keeps Focus Mode on for the game and sends the press once Focus Mode is active. The press is sent
--- again each frame until the hunter leaves the action it was in and the Focus Mode stance actions.
+-- again each frame until the hunter leaves the action it was in for one that is not standing,
+-- moving or a Focus Mode stance.
 local function hold_focus_for_strike(hunter, focus_key, strike_key)
     strike.frames_left = strike.frames_left - 1
     focus_key:set_On(true)
     if not strike.pending then return end
 
     local action = current_action_name(hunter)
-    if strike.sent and action ~= strike.start_action and not FOCUS_STANCE_ACTIONS[action] then
+    if strike.sent and action ~= strike.start_action and not is_strike_not_started(action) then
         strike.pending = false
         strike.frames_left = math.min(strike.frames_left, FRAMES_AFTER_STRIKE)
         strike.action = action
