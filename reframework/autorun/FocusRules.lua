@@ -184,6 +184,8 @@ end
 -- moving or a Focus Mode stance.
 -- The game's command for the Focus Strike (app.PlayerCommand.TYPE AIM_SP_B), by strike key.
 local GAME_COMMAND_FOR_KEY = { [PAD_KEY_FOCUS_STRIKE] = 63 }
+-- The game's command for R1 alone (ATTACK_SP_B), which sheathes the weapon.
+local GAME_COMMAND_R1_ALONE = 34
 
 -- How the game buffers a press, seen in its app.cPlayerCommandInput state: a press made in the
 -- pre-cancel part of an action is kept and starts the strike as soon as the action can be
@@ -215,11 +217,13 @@ local function hold_focus_for_strike(hunter, focus_key, strike_key, controller)
         log_line(string.format("strike ended in %s facing %.0f", action, facing_degrees(hunter)))
     elseif strike.sent and game_dropped_press(controller) then
         -- Too early. Like the game, drop the strike, and let go of Focus Mode so the hunter does not
-        -- end up in the Focus Mode stance.
-        log_line("strike press too early during " .. action .. ", dropped")
+        -- end up in the Focus Mode stance. The game also kept the press as R1 alone, which would
+        -- sheathe the weapon once Focus Mode is let go, so that command is reset too.
+        log_line("strike press too early during " .. action .. ", Focus Mode let go")
         reset_strike()
         focus_key:clear()
         strike_key:clear()
+        controller:resetCommand(GAME_COMMAND_R1_ALONE)
         return
     elseif hunter:get_HunterContext():get_IsAim() then
         send_strike_press(strike_key)
