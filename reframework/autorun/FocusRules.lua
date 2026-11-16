@@ -253,18 +253,26 @@ end
 -- (app.PlayerCommand.TYPE AIM_SP_B) was given, through app.PlayerUtil.checkCommandResult. An action
 -- that cannot, such as drawing the weapon, does not ask, and the game drops a press made then. The
 -- mod does the same: a press while the game is not asking is ignored, and Focus Mode is not turned on.
+-- Standing and moving with some weapons, such as the Hammer and the Lance, only ask for Focus Mode
+-- (AIM). There the strike comes from the Focus Mode stance, which then asks for the Focus Strike.
+local FOCUS_MODE_COMMAND = 61
 local input_frame = 0
-local focus_strike_asked_frame = -1
+local asked_frame = { [FOCUS_MODE_COMMAND] = -1, [FOCUS_STRIKE_COMMAND] = -1 }
 
 sdk.hook(sdk.find_type_definition("app.PlayerUtil"):get_method("checkCommandResult"), function(args)
     local command_type = sdk.to_int64(args[4]) & 0xFFFFFFFF
-    if command_type == FOCUS_STRIKE_COMMAND and is_master_hunter(sdk.to_managed_object(args[2]):get_Character()) then
-        focus_strike_asked_frame = input_frame
+    if asked_frame[command_type] and is_master_hunter(sdk.to_managed_object(args[2]):get_Character()) then
+        asked_frame[command_type] = input_frame
     end
 end)
 
-local function game_takes_focus_strike_now()
-    return input_frame - focus_strike_asked_frame <= 1
+local function game_asks_for(command_type)
+    return input_frame - asked_frame[command_type] <= 1
+end
+
+local function game_takes_focus_strike_now(action)
+    return game_asks_for(FOCUS_STRIKE_COMMAND)
+        or (NOT_STARTED_ACTIONS[action] and game_asks_for(FOCUS_MODE_COMMAND))
 end
 
 -- The command controller merges pad and keyboard input here, before the game reads its commands.
@@ -290,7 +298,7 @@ end, function(retval)
     end
     if strike.frames_left == 0 then
         local key_index = focus_move_pressed(hunter, input)
-        if key_index == PAD_KEY_FOCUS_STRIKE and not game_takes_focus_strike_now() then
+        if key_index == PAD_KEY_FOCUS_STRIKE and not game_takes_focus_strike_now(current_action_name(hunter)) then
             input:getKey(key_index):clear()
             log_line("strike press ignored, no Focus Strike possible during " .. current_action_name(hunter))
         elseif key_index then
