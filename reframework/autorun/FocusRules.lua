@@ -54,10 +54,6 @@ local START_TURN_FOR_AIM = { [3] = 1, [4] = 2 } -- LV1_AIM -> LV1, LV2_AIM -> LV
 -- start, and frames it stays on after the strike press is passed to the game.
 local STRIKE_WINDOW_FRAMES = 30
 local FRAMES_AFTER_STRIKE = 10
--- A press during a long attack can only start the strike once the attack can be cancelled, which can
--- be later than STRIKE_WINDOW_FRAMES. So the window only starts to run out once the hunter leaves the
--- action the press was made in. This limit keeps an action that never ends from holding Focus Mode on.
-local MAX_WAIT_FRAMES = 120
 
 local function load_settings()
     local saved = json.load_file(CONFIG_PATH)
@@ -163,7 +159,6 @@ end
 
 local function start_strike_window(hunter, input, key_index)
     strike.frames_left = STRIKE_WINDOW_FRAMES
-    strike.wait_frames_left = MAX_WAIT_FRAMES
     strike.pending = true
     strike.sent = false
     strike.start_action = current_action_name(hunter)
@@ -190,49 +185,44 @@ end
 -- The game's command for the Focus Strike (app.PlayerCommand.TYPE AIM_SP_B), by strike key.
 local GAME_COMMAND_FOR_KEY = { [PAD_KEY_FOCUS_STRIKE] = 63 }
 
--- How the game buffers a press, seen in its app.cPlayerCommandInput state: a press made before the
--- action can be cancelled succeeds as a normal command after a few frames, and the action ignores
--- it. The game then counts the held key as used, and the strike never comes out. A press made in the
--- action's pre-cancel section is kept and starts the strike as soon as the action can be cancelled.
-local function game_used_press(controller)
+-- How the game buffers a press, seen in its app.cPlayerCommandInput state: a press made in the
+-- pre-cancel part of an action is kept and starts the strike as soon as the action can be
+-- cancelled (SuccessCancel). A press made earlier only counts as an ordinary press (SuccessNormal),
+-- which the action ignores, so the game drops it.
+local function game_dropped_press(controller)
     local command_index = GAME_COMMAND_FOR_KEY[strike.key_index]
     if not command_index then return false end
     local command_list = controller._CommandHolder:get_CommandList()
     for i = 0, command_list:get_size() - 1 do
         local command_input = command_list:get_element(i)
         if command_input.CommandIndex == command_index then
-            return command_input:get_SuccessNormal() or command_input:get_SuccessCancel()
+            return command_input:get_SuccessNormal() and not command_input:get_SuccessCancel()
         end
     end
     return false
 end
 
-local function is_waiting_for_press_action_to_end(action)
-    return strike.pending and action == strike.start_action and strike.wait_frames_left > 0
-end
-
 local function hold_focus_for_strike(hunter, focus_key, strike_key, controller)
-    local action = current_action_name(hunter)
-    strike.wait_frames_left = strike.wait_frames_left - 1
-    if not is_waiting_for_press_action_to_end(action) then
-        strike.frames_left = strike.frames_left - 1
-    end
+    strike.frames_left = strike.frames_left - 1
     focus_key:set_On(true)
     if not strike.pending then return end
 
+    local action = current_action_name(hunter)
     if strike.sent and action ~= strike.start_action and not is_strike_not_started(action) then
         strike.pending = false
         strike.frames_left = math.min(strike.frames_left, FRAMES_AFTER_STRIKE)
         strike.action = action
         log_line(string.format("strike ended in %s facing %.0f", action, facing_degrees(hunter)))
+    elseif strike.sent and game_dropped_press(controller) then
+        -- Too early. Like the game, drop the strike, and let go of Focus Mode so the hunter does not
+        -- end up in the Focus Mode stance.
+        log_line("strike press too early during " .. action .. ", dropped")
+        reset_strike()
+        focus_key:clear()
+        strike_key:clear()
+        return
     elseif hunter:get_HunterContext():get_IsAim() then
-        if strike.sent and game_used_press(controller) then
-            -- Let go for one frame, so the next frame is a new press the game can buffer again.
-            strike_key:clear()
-            log_line("strike press used up during " .. action .. ", pressing again")
-        else
-            send_strike_press(strike_key)
-        end
+        send_strike_press(strike_key)
     end
     if strike.frames_left == 0 and strike.pending then
         log_line("strike window ended in " .. action)
@@ -376,53 +366,6 @@ sdk.hook(sdk.find_type_definition("app.PlayerCommonActionComponent.acAimTargetHo
     function(args)
         return block_target_pull(sdk.to_managed_object(args[2]):get_Chara(), "updateTargetPos")
     end)
-
--- With logging on: the game's own buffer state of the Focus Strike command (app.PlayerCommand.TYPE
--- AIM_SP_B) and of R1 alone (ATTACK_SP_B), logged after each command update while a strike waits or the
--- focus button is held, whenever it changes. app.cPlayerCommandInput keeps per input section (NORMAL,
--- PRE_CANCEL, CANCEL) whether the key was pushed, which is how the game buffers presses.
-local LOGGED_COMMANDS = { [34] = "ATTACK_SP_B", [63] = "AIM_SP_B" }
-local last_command_state = {}
-
-local function describe_command_input(command_input)
-    local sections = {}
-    local input_info = command_input._InputInfo
-    for i = 0, input_info:get_size() - 1 do
-        local info = input_info:get_element(i)
-        table.insert(sections, string.format("%d:%s%s", info:get_field("_Section"),
-            info:get_field("_Pushed") and "pushed" or "-", info:get_field("_IsChangedAction") and ",changed" or ""))
-    end
-    return string.format("keep=%s push_ok=%s ok_cancel=%s ok_normal=%s pre_done=%s in_cancel=%s [%s]",
-        tostring(command_input:get_KeepPushing()), tostring(command_input:get_PushToSuccess()),
-        tostring(command_input:get_SuccessCancel()), tostring(command_input:get_SuccessNormal()),
-        tostring(command_input._PreCancelAlreadySuccess), tostring(command_input._InCancelSectionOnPreCanceled),
-        table.concat(sections, " "))
-end
-
-local updating_controller = nil
-
-sdk.hook(sdk.find_type_definition("app.cPlayerCommandController"):get_method("updateCommand"), function(args)
-    updating_controller = sdk.to_managed_object(args[2])
-end, function(retval)
-    local controller = updating_controller
-    updating_controller = nil
-    if not settings.log_state or not controller then return retval end
-    local hunter = controller:get_Character()
-    if not is_master_hunter(hunter) or not (strike.pending or focus_button_held) then return retval end
-    local command_list = controller._CommandHolder:get_CommandList()
-    for i = 0, command_list:get_size() - 1 do
-        local command_input = command_list:get_element(i)
-        local name = LOGGED_COMMANDS[command_input.CommandIndex]
-        if name then
-            local state = current_action_name(hunter) .. " " .. describe_command_input(command_input)
-            if state ~= last_command_state[name] then
-                log_line("command " .. name .. " " .. state)
-                last_command_state[name] = state
-            end
-        end
-    end
-    return retval
-end)
 
 -- On the Sword and Shield, Hammer, Hunting Horn, Lance and Gunlance the Focus Strike action turns the
 -- hunter to the camera itself instead of through rotateAimTurnLook. While a strike is starting or
