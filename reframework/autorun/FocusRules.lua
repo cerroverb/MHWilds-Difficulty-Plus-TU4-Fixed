@@ -26,7 +26,7 @@
 local CONFIG_PATH = "FocusRules.json"
 
 local settings = {
-    log_state = false,
+    log_state = true, -- false in releases
     focus_strike_only = true,
     no_aim_turning = true,
     wounds_only_while_focus_held = true,
@@ -324,9 +324,9 @@ sdk.hook(sdk.find_type_definition("app.PlayerCommonActionComponent.acAimTargetHo
     end)
 
 -- On the Sword and Shield, Hammer, Hunting Horn, Lance and Gunlance the Focus Strike action turns the
--- hunter to the camera itself instead of through rotateAimTurnLook. The SDK dump has no method bodies,
--- so which of these hunter methods does it is not known. While a strike is starting or playing, the
--- direction-taking turn requests are skipped, and every call is counted for the log.
+-- hunter to the camera itself instead of through rotateAimTurnLook. On the Sword and Shield the game
+-- calls onGunnerAimAdjust every frame of the strike (round 18 log) and none of the other turn requests.
+-- While a strike is starting or playing, these calls are skipped, and every call is counted for the log.
 -- app.WeaponDef.TYPE SHORT_SWORD, HAMMER, WHISTLE, LANCE, GUN_LANCE
 local STRIKE_TURNS_TO_CAMERA = { [1] = true, [4] = true, [5] = true, [6] = true, [7] = true }
 
@@ -342,7 +342,8 @@ local function count_strike_call(name)
     strike_blocks[name] = (strike_blocks[name] or 0) + 1
 end
 
-for _, method_name in ipairs({ "turnDirection_MotionSequence", "requestInertialTurn", "setAngleYRotatorDampingTarget" }) do
+for _, method_name in ipairs({ "onGunnerAimAdjust", "turnDirection_MotionSequence", "requestInertialTurn",
+    "setAngleYRotatorDampingTarget" }) do
     sdk.hook(hunter_type:get_method(method_name), function(args)
         if not settings.no_strike_turn_to_camera or not is_camera_turning_strike(hunter_from_args(args)) then return end
         count_strike_call(method_name)
@@ -351,7 +352,7 @@ for _, method_name in ipairs({ "turnDirection_MotionSequence", "requestInertialT
 end
 
 -- Logged only, to see whether they take part in the turn.
-for _, method_name in ipairs({ "startAngleYRotator", "onGunnerAimAdjust", "beginGunnerAimAdjustInterpolate" }) do
+for _, method_name in ipairs({ "startAngleYRotator", "beginGunnerAimAdjustInterpolate" }) do
     sdk.hook(hunter_type:get_method(method_name), function(args)
         if settings.log_state and is_master_melee_striking(hunter_from_args(args)) then
             count_strike_call(method_name .. "(seen)")
