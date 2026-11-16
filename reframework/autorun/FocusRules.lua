@@ -54,6 +54,10 @@ local START_TURN_FOR_AIM = { [3] = 1, [4] = 2 } -- LV1_AIM -> LV1, LV2_AIM -> LV
 -- start, and frames it stays on after the strike press is passed to the game.
 local STRIKE_WINDOW_FRAMES = 30
 local FRAMES_AFTER_STRIKE = 10
+-- The window only starts to run out once the hunter leaves the action the press was made in, such as
+-- drawing the weapon or a dodge, so the strike still comes out on the first frame the game allows it.
+-- This limit keeps an action that never ends from holding Focus Mode on.
+local MAX_WAIT_FRAMES = 120
 
 local function load_settings()
     local saved = json.load_file(CONFIG_PATH)
@@ -134,9 +138,8 @@ local function is_strike_not_started(action)
 end
 
 -- action: the action the strike turned into, kept until the hunter leaves it.
--- press_action: the action the hunter was in when the press was last sent.
 local strike = { frames_left = 0, pending = false, sent = false, start_action = nil, key_index = PAD_KEY_FOCUS_STRIKE,
-    action = nil, press_action = nil }
+    action = nil }
 
 local function current_action_name(hunter)
     local action = hunter:get_BaseActionController():get_CurrentAction()
@@ -160,13 +163,13 @@ end
 
 local function start_strike_window(hunter, input, key_index)
     strike.frames_left = STRIKE_WINDOW_FRAMES
+    strike.wait_frames_left = MAX_WAIT_FRAMES
     strike.pending = true
     strike.sent = false
     strike.start_action = current_action_name(hunter)
     strike.key_index = key_index
     input:getKey(key_index):clear()
     strike.action = nil
-    strike.press_action = nil
     strike_blocks = {}
     log_line(string.format("strike armed during %s key %d facing %.0f", strike.start_action, key_index,
         facing_degrees(hunter)))
@@ -181,31 +184,29 @@ local function send_strike_press(strike_key)
     strike.sent = true
 end
 
--- Keeps Focus Mode on for the game and sends the press once Focus Mode is active. The press is held
--- until the hunter leaves the action it was in for one that is not standing, moving or a Focus Mode
--- stance. A held press counts only once: after drawing the weapon the hunter goes into a Focus Mode
--- stance with the press still held and no strike comes out. So when the hunter moves into another
--- such action, the press is let go for one frame and sent again as a new press.
+-- Keeps Focus Mode on for the game and sends the press once Focus Mode is active. The press is sent
+-- again each frame until the hunter leaves the action it was in for one that is not standing,
+-- moving or a Focus Mode stance.
+local function is_waiting_for_press_action_to_end(action)
+    return strike.pending and action == strike.start_action and strike.wait_frames_left > 0
+end
+
 local function hold_focus_for_strike(hunter, focus_key, strike_key)
-    strike.frames_left = strike.frames_left - 1
+    local action = current_action_name(hunter)
+    strike.wait_frames_left = strike.wait_frames_left - 1
+    if not is_waiting_for_press_action_to_end(action) then
+        strike.frames_left = strike.frames_left - 1
+    end
     focus_key:set_On(true)
     if not strike.pending then return end
 
-    local action = current_action_name(hunter)
     if strike.sent and action ~= strike.start_action and not is_strike_not_started(action) then
         strike.pending = false
         strike.frames_left = math.min(strike.frames_left, FRAMES_AFTER_STRIKE)
         strike.action = action
         log_line(string.format("strike ended in %s facing %.0f", action, facing_degrees(hunter)))
     elseif hunter:get_HunterContext():get_IsAim() then
-        if strike.press_action ~= nil and strike.press_action ~= action and is_strike_not_started(action) then
-            strike_key:clear()
-            strike.press_action = nil
-            log_line("strike press sent again in " .. action)
-        else
-            send_strike_press(strike_key)
-            strike.press_action = strike.press_action or action
-        end
+        send_strike_press(strike_key)
     end
     if strike.frames_left == 0 and strike.pending then
         log_line("strike window ended in " .. action)
