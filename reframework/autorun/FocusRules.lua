@@ -134,9 +134,8 @@ local function is_strike_not_started(action)
 end
 
 -- action: the action the strike turned into, kept until the hunter leaves it.
--- key_kept: the key of a Focus Mode move pressed during an action in PRESS_KEPT_UNTIL_END_ACTIONS.
 local strike = { frames_left = 0, pending = false, sent = false, start_action = nil, key_index = PAD_KEY_FOCUS_STRIKE,
-    action = nil, key_kept = nil }
+    action = nil, key_down_last_frame = false }
 
 local function current_action_name(hunter)
     local action = hunter:get_BaseActionController():get_CurrentAction()
@@ -147,7 +146,6 @@ local function reset_strike()
     strike.frames_left = 0
     strike.pending = false
     strike.sent = false
-    strike.key_kept = nil
 end
 
 -- Calls blocked during the current strike, by method name, logged when the strike action ends.
@@ -165,6 +163,7 @@ local function start_strike_window(hunter, input, key_index)
     strike.sent = false
     strike.start_action = current_action_name(hunter)
     strike.key_index = key_index
+    strike.key_down_last_frame = false
     input:getKey(key_index):clear()
     strike.action = nil
     strike_blocks = {}
@@ -172,9 +171,18 @@ local function start_strike_window(hunter, input, key_index)
         facing_degrees(hunter)))
 end
 
+-- The game reacts to the frame a key goes down and keeps that press only for a short time. A press
+-- held through a dodge or an attack is therefore forgotten before the action can be cancelled, and
+-- the hunter ends up in the Focus Mode stance. So the press is repeated, key down on one frame and up
+-- on the next, until the strike starts.
 local function send_strike_press(strike_key)
-    strike_key:set_On(true)
-    strike_key:set_OnTrigger(true)
+    if strike.key_down_last_frame then
+        strike_key:clear()
+    else
+        strike_key:set_On(true)
+        strike_key:set_OnTrigger(true)
+    end
+    strike.key_down_last_frame = not strike.key_down_last_frame
     if not strike.sent then
         log_line("strike passed to game")
     end
@@ -223,22 +231,6 @@ end
 
 -- The key of a Focus Mode move pressed this frame: a Focus Strike, or the Insect Glaive's Rising
 -- Spiral Slash. Both are passed to the game through the same window that holds Focus Mode on.
--- Drawing the weapon while standing, and the back dodge. If the game sees the strike key during one
--- of these, it ignores that key after the action ends, and the hunter is left in the Focus Mode
--- stance with no strike. So a press during them is kept back, the key is hidden from the game until
--- the action ends, and the strike starts on the first frame after it, the same way as a press made
--- right then.
-local PRESS_KEPT_UNTIL_END_ACTIONS = { cWpOn = true, cWpSpOn = true, cDodgeBack = true }
-
-local function start_strike_after_action(hunter, input)
-    if PRESS_KEPT_UNTIL_END_ACTIONS[current_action_name(hunter)] then
-        input:getKey(strike.key_kept):clear()
-        return
-    end
-    start_strike_window(hunter, input, strike.key_kept)
-    strike.key_kept = nil
-end
-
 local function focus_move_pressed(hunter, input)
     local strike_key = input:getKey(PAD_KEY_FOCUS_STRIKE)
     if strike_key:get_OnTrigger() and (focus_button_held or settings.strike_on_r1_alone) then
@@ -286,14 +278,8 @@ end, function(retval)
     end
     if strike.frames_left == 0 then
         local key_index = focus_move_pressed(hunter, input)
-        if key_index and PRESS_KEPT_UNTIL_END_ACTIONS[current_action_name(hunter)] then
-            strike.key_kept = key_index
-            log_line("strike press kept until the action ends")
-        elseif key_index then
+        if key_index then
             start_strike_window(hunter, input, key_index)
-        end
-        if strike.key_kept then
-            start_strike_after_action(hunter, input)
         end
     end
     if strike.frames_left > 0 then
